@@ -3,8 +3,8 @@ cmake_minimum_required(VERSION 3.3)
 project (hello)
 
 # compilers to use (9.2)
-set(CMAKE_C_COMPILER /opt/homebrew/Cellar/gcc/11.2.0_3/bin/gcc-11)
-set(CMAKE_CXX_COMPILER  /opt/homebrew/Cellar/gcc/11.2.0_3/bin/g++-11)
+set(CMAKE_C_COMPILER /opt/homebrew/opt/llvm/bin/clang)
+set(CMAKE_CXX_COMPILER  /opt/homebrew/opt/llvm/bin/clang++)
 
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/Modules)
 

@@ -12,7 +12,20 @@ int main(int argc, char **argv) {
    #pragma omp parallel
    {
       #pragma omp single
-      {
+     {
+         // behaves like this because std::cout isn't thread safe
+         // num threads = 8
+         // max threads = 8
+         // num proces  = 8
+
+         // Hello (7)
+         // Hello (Hello (3)
+         // Hello (Hello (2)
+         // Hello (Hello (5)
+         // 6)
+         // Hello (4)
+         // 1)
+         // 0)
          std::cout << "num threads = " << omp_get_num_threads() << std::endl;
          std::cout << "max threads = " << omp_get_max_threads() << std::endl;
          std::cout << "num proces  = " << omp_get_num_procs() << std::endl;
