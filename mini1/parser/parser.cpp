@@ -85,75 +85,58 @@ public:
 
 CSV makeCSV(std::string filename) {
   CSV csv;
-
   std::ifstream file(filename);
   std::string line;
   std::getline(file, line); // Skip the header line
 
-  for (int i = 0; i < 5 && std::getline(file, line); ++i) {
+  while (std::getline(file, line)) {
     std::istringstream s(line);
     CSVRow row;
     std::string field;
 
-    std::getline(s, field, ',');
-    row.latitude = field.empty() ? 0.0 : std::stod(field);
-    std::getline(s, field, ',');
-    row.longitude = field.empty() ? 0.0 : std::stod(field);
-    std::getline(s, field, ',');
-    row.zip_code = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.number_of_persons_injured = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.number_of_persons_killed = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.number_of_pedestrians_injured = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.number_of_pedestrians_killed = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.number_of_cyclists_injured = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    std::cout << "here" << std::endl;
-    row.number_of_cyclists_killed = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.number_of_motorists_injured = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.number_of_motorists_killed = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.collision_id = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.crash_date = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.crash_time = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.borough = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.location = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.on_street_name = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.cross_street_name = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.off_street_name = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.contributing_factor_vehicle_1 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.contributing_factor_vehicle_2 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.contributing_factor_vehicle_3 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.contributing_factor_vehicle_4 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.contributing_factor_vehicle_5 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.vehicle_type_code_1 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.vehicle_type_code_2 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.vehicle_type_code_3 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.vehicle_type_code_4 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.vehicle_type_code_5 = field.empty() ? "" : field;
+    auto parseField = [&s, &field](auto& value, auto&& converter) {
+      std::getline(s, field, ',');
+      if (!field.empty()) {
+        try {
+          value = converter(field);
+        } catch (const std::exception& e) {
+          value = {};
+        }
+      } else {
+        value = {};
+      }
+    };
+
+    parseField(row.latitude, [](const std::string& s) { return std::stod(s); });
+    parseField(row.longitude, [](const std::string& s) { return std::stod(s); });
+    parseField(row.zip_code, [](const std::string& s) { return std::stoi(s); });
+    parseField(row.number_of_persons_injured, [](const std::string& s) { return std::stoi(s); });
+    parseField(row.number_of_persons_killed, [](const std::string& s) { return std::stoi(s); });
+    parseField(row.number_of_pedestrians_injured, [](const std::string& s) { return std::stoi(s); });
+    parseField(row.number_of_pedestrians_killed, [](const std::string& s) { return std::stoi(s); });
+    parseField(row.number_of_cyclists_injured, [](const std::string& s) { return std::stoi(s); });
+    parseField(row.number_of_cyclists_killed, [](const std::string& s) { return std::stoi(s); });
+    parseField(row.number_of_motorists_injured, [](const std::string& s) { return std::stoi(s); });
+    parseField(row.number_of_motorists_killed, [](const std::string& s) { return std::stoi(s); });
+    parseField(row.collision_id, [](const std::string& s) { return std::stoi(s); });
+
+    std::getline(s, row.crash_date, ',');
+    std::getline(s, row.crash_time, ',');
+    std::getline(s, row.borough, ',');
+    std::getline(s, row.location, ',');
+    std::getline(s, row.on_street_name, ',');
+    std::getline(s, row.cross_street_name, ',');
+    std::getline(s, row.off_street_name, ',');
+    std::getline(s, row.contributing_factor_vehicle_1, ',');
+    std::getline(s, row.contributing_factor_vehicle_2, ',');
+    std::getline(s, row.contributing_factor_vehicle_3, ',');
+    std::getline(s, row.contributing_factor_vehicle_4, ',');
+    std::getline(s, row.contributing_factor_vehicle_5, ',');
+    std::getline(s, row.vehicle_type_code_1, ',');
+    std::getline(s, row.vehicle_type_code_2, ',');
+    std::getline(s, row.vehicle_type_code_3, ',');
+    std::getline(s, row.vehicle_type_code_4, ',');
+    std::getline(s, row.vehicle_type_code_5);
 
     csv.addRow(row);
   }
@@ -162,9 +145,10 @@ CSV makeCSV(std::string filename) {
 }
 
 
+
 int main() {
   std::string filename =
-      "./Motor_Vehicle_Collisions_-_Crashes_20250210.csv";
+      "./collision_data.csv";
   CSV csv = makeCSV(filename);
 
   std::cout << "Number of rows: " << csv.rowCount() << std::endl;
