@@ -8,8 +8,6 @@ class CSVRow {
 public:
   double latitude;
   double longitude;
-  long crash_date;
-  int crash_time;
   int zip_code;
   int number_of_persons_injured;
   int number_of_persons_killed;
@@ -20,6 +18,8 @@ public:
   int number_of_motorists_injured;
   int number_of_motorists_killed;
   int collision_id;
+  std::string crash_date;
+  std::string crash_time;
   std::string borough;
   std::string location;
   std::string on_street_name;
@@ -85,75 +85,90 @@ public:
 
 CSV makeCSV(std::string filename) {
   CSV csv;
+
   std::ifstream file(filename);
   std::string line;
+  std::getline(file, line); // Skip the header line
 
-  while (std::getline(file, line)) {
+  for (int i = 0; i < 5 && std::getline(file, line); ++i) {
     std::istringstream s(line);
-    std::string field;
     CSVRow row;
+    std::string field;
 
     std::getline(s, field, ',');
-    row.latitude = std::stod(field);
+    row.latitude = field.empty() ? 0.0 : std::stod(field);
     std::getline(s, field, ',');
-    row.longitude = std::stod(field);
+    row.longitude = field.empty() ? 0.0 : std::stod(field);
     std::getline(s, field, ',');
-    row.crash_date = std::stol(field);
+    row.zip_code = field.empty() ? 0 : std::stoi(field);
     std::getline(s, field, ',');
-    row.crash_time = std::stoi(field);
+    row.number_of_persons_injured = field.empty() ? 0 : std::stoi(field);
     std::getline(s, field, ',');
-    row.zip_code = std::stoi(field);
+    row.number_of_persons_killed = field.empty() ? 0 : std::stoi(field);
     std::getline(s, field, ',');
-    row.number_of_persons_injured = std::stoi(field);
+    row.number_of_pedestrians_injured = field.empty() ? 0 : std::stoi(field);
     std::getline(s, field, ',');
-    row.number_of_persons_killed = std::stoi(field);
+    row.number_of_pedestrians_killed = field.empty() ? 0 : std::stoi(field);
     std::getline(s, field, ',');
-    row.number_of_pedestrians_injured = std::stoi(field);
+    row.number_of_cyclists_injured = field.empty() ? 0 : std::stoi(field);
     std::getline(s, field, ',');
-    row.number_of_pedestrians_killed = std::stoi(field);
+    std::cout << "here" << std::endl;
+    row.number_of_cyclists_killed = field.empty() ? 0 : std::stoi(field);
     std::getline(s, field, ',');
-    row.number_of_cyclists_injured = std::stoi(field);
+    row.number_of_motorists_injured = field.empty() ? 0 : std::stoi(field);
     std::getline(s, field, ',');
-    row.number_of_cyclists_killed = std::stoi(field);
+    row.number_of_motorists_killed = field.empty() ? 0 : std::stoi(field);
     std::getline(s, field, ',');
-    row.number_of_motorists_injured = std::stoi(field);
+    row.collision_id = field.empty() ? 0 : std::stoi(field);
     std::getline(s, field, ',');
-    row.number_of_motorists_killed = std::stoi(field);
+    row.crash_date = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.collision_id = std::stoi(field);
+    row.crash_time = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.borough = field;
+    row.borough = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.location = field;
+    row.location = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.on_street_name = field;
+    row.on_street_name = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.cross_street_name = field;
+    row.cross_street_name = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.off_street_name = field;
+    row.off_street_name = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.contributing_factor_vehicle_1 = field;
+    row.contributing_factor_vehicle_1 = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.contributing_factor_vehicle_2 = field;
+    row.contributing_factor_vehicle_2 = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.contributing_factor_vehicle_3 = field;
+    row.contributing_factor_vehicle_3 = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.contributing_factor_vehicle_4 = field;
+    row.contributing_factor_vehicle_4 = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.contributing_factor_vehicle_5 = field;
+    row.contributing_factor_vehicle_5 = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.vehicle_type_code_1 = field;
+    row.vehicle_type_code_1 = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.vehicle_type_code_2 = field;
+    row.vehicle_type_code_2 = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.vehicle_type_code_3 = field;
+    row.vehicle_type_code_3 = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.vehicle_type_code_4 = field;
+    row.vehicle_type_code_4 = field.empty() ? "" : field;
     std::getline(s, field, ',');
-    row.vehicle_type_code_5 = field;
+    row.vehicle_type_code_5 = field.empty() ? "" : field;
 
     csv.addRow(row);
   }
 
   return csv;
+}
+
+
+int main() {
+  std::string filename =
+      "./Motor_Vehicle_Collisions_-_Crashes_20250210.csv";
+  CSV csv = makeCSV(filename);
+
+  std::cout << "Number of rows: " << csv.rowCount() << std::endl;
+  csv.printHead();
+
+  return 0;
 }
