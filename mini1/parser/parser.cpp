@@ -81,6 +81,14 @@ public:
       rows[i].printRow();
     }
   }
+
+  void printRow(size_t index) const {
+    if (index < rows.size()) {
+      rows[index].printRow();
+    } else {
+      std::cerr << "Index out of range" << std::endl;
+    }
+  }
 };
 
 // Helper functions to parse CSV values that may be empty or "NULL"
@@ -256,10 +264,12 @@ CSV makeCSV(const std::string &filename) {
 // test code
 // comment out when integrating
 int main() {
-  std::string filename = "./Motor_Vehicle_Collisions_-_Crashes_20250210.csv";
+  // std::string filename = "./Motor_Vehicle_Collisions_-_Crashes_20250210.csv";
+  std::string filename = "./test.csv";
   CSV csv = makeCSV(filename);
   // std::cout << "Number of rows successfully parsed: " << csv.rowCount()
   //           << std::endl;
   // csv.printHead();
+  csv.printRow(959);
   return 0;
 }
