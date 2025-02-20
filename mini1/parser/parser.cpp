@@ -103,6 +103,7 @@ inline std::string parseString(const std::string &field) {
 }
 
 CSV makeCSV(const std::string &filename) {
+  int ignoredRows = 0;
   CSV csv;
   std::ifstream file(filename);
   if (!file.is_open()) {
@@ -115,8 +116,6 @@ CSV makeCSV(const std::string &filename) {
   if (!std::getline(file, line)) {
     return csv;
   }
-  int rowNumber = 0;
-  int ignoredRows = 0;
   // Read each row until EOF
   while (std::getline(file, line)) {
     std::istringstream s(line);
@@ -241,7 +240,6 @@ CSV makeCSV(const std::string &filename) {
 
       csv.addRow(row);
 
-      rowNumber++;
 
     } catch (const std::invalid_argument &e) {
       ignoredRows++;
@@ -250,16 +248,18 @@ CSV makeCSV(const std::string &filename) {
     }
   }
   std::cout << "Ignored Rows = " << ignoredRows << std::endl;
+  std::cout << "Number of rows successfully parsed: " << csv.rowCount()
+            << std::endl;
   return csv;
 }
 
+// test code
+// comment out when integrating
 int main() {
   std::string filename = "./Motor_Vehicle_Collisions_-_Crashes_20250210.csv";
   CSV csv = makeCSV(filename);
-
-  std::cout << "Number of rows successfully parsed: " << csv.rowCount()
-            << std::endl;
+  // std::cout << "Number of rows successfully parsed: " << csv.rowCount()
+  //           << std::endl;
   // csv.printHead();
-
   return 0;
 }
