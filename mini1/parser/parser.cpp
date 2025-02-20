@@ -83,92 +83,183 @@ public:
   }
 };
 
-CSV makeCSV(std::string filename) {
+// Helper functions to parse CSV values that may be empty or "NULL"
+inline double parseDouble(const std::string &field) {
+  if (field.empty() || field == "NULL" || field == "Unspecified")
+    return 0.0;
+  return std::stod(field);
+}
+
+inline int parseInt(const std::string &field) {
+  if (field.empty() || field == "NULL" || field == "Unspecified")
+    return 0;
+  return std::stoi(field);
+}
+
+inline std::string parseString(const std::string &field) {
+  if (field.empty() || field == "NULL" || field == "Unspecified")
+    return "";
+  return field;
+}
+
+CSV makeCSV(const std::string &filename) {
   CSV csv;
-
   std::ifstream file(filename);
-  std::string line;
-  std::getline(file, line); // Skip the header line
+  if (!file.is_open()) {
+    std::cerr << "Failed to open file: " << filename << std::endl;
+    return csv;
+  }
 
-  for (int i = 0; i < 5 && std::getline(file, line); ++i) {
+  // Skip header line
+  std::string line;
+  if (!std::getline(file, line)) {
+    return csv;
+  }
+  int rowNumber = 0;
+  int ignoredRows = 0;
+  // Read each row until EOF
+  while (std::getline(file, line)) {
     std::istringstream s(line);
     CSVRow row;
     std::string field;
+    try {
+      // 1: CRASH DATE
+      std::getline(s, field, ',');
+      row.crash_date = parseString(field);
 
-    std::getline(s, field, ',');
-    row.latitude = field.empty() ? 0.0 : std::stod(field);
-    std::getline(s, field, ',');
-    row.longitude = field.empty() ? 0.0 : std::stod(field);
-    std::getline(s, field, ',');
-    row.zip_code = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.number_of_persons_injured = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.number_of_persons_killed = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.number_of_pedestrians_injured = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.number_of_pedestrians_killed = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.number_of_cyclists_injured = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    std::cout << "here" << std::endl;
-    row.number_of_cyclists_killed = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.number_of_motorists_injured = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.number_of_motorists_killed = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.collision_id = field.empty() ? 0 : std::stoi(field);
-    std::getline(s, field, ',');
-    row.crash_date = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.crash_time = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.borough = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.location = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.on_street_name = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.cross_street_name = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.off_street_name = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.contributing_factor_vehicle_1 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.contributing_factor_vehicle_2 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.contributing_factor_vehicle_3 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.contributing_factor_vehicle_4 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.contributing_factor_vehicle_5 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.vehicle_type_code_1 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.vehicle_type_code_2 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.vehicle_type_code_3 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.vehicle_type_code_4 = field.empty() ? "" : field;
-    std::getline(s, field, ',');
-    row.vehicle_type_code_5 = field.empty() ? "" : field;
+      // 2: CRASH TIME
+      std::getline(s, field, ',');
+      row.crash_time = parseString(field);
 
-    csv.addRow(row);
+      // 3: BOROUGH
+      std::getline(s, field, ',');
+      row.borough = parseString(field);
+
+      // 4: ZIP CODE
+      std::getline(s, field, ',');
+      row.zip_code = parseInt(field);
+
+      // 5: LATITUDE
+      std::getline(s, field, ',');
+      row.latitude = parseDouble(field);
+
+      // 6: LONGITUDE
+      std::getline(s, field, ',');
+      row.longitude = parseDouble(field);
+
+      // 7: LOCATION
+      std::getline(s, field, ',');
+      row.location = parseString(field);
+
+      // 8: ON STREET NAME
+      std::getline(s, field, ',');
+      row.on_street_name = parseString(field);
+
+      // 9: CROSS STREET NAME
+      std::getline(s, field, ',');
+      row.cross_street_name = parseString(field);
+
+      // 10: OFF STREET NAME
+      std::getline(s, field, ',');
+      row.off_street_name = parseString(field);
+
+      // 11: NUMBER OF PERSONS INJURED
+      std::getline(s, field, ',');
+      row.number_of_persons_injured = parseInt(field);
+
+      // 12: NUMBER OF PERSONS KILLED
+      std::getline(s, field, ',');
+      row.number_of_persons_killed = parseInt(field);
+
+      // 13: NUMBER OF PEDESTRIANS INJURED
+      std::getline(s, field, ',');
+      row.number_of_pedestrians_injured = parseInt(field);
+
+      // 14: NUMBER OF PEDESTRIANS KILLED
+      std::getline(s, field, ',');
+      row.number_of_pedestrians_killed = parseInt(field);
+
+      // 15: NUMBER OF CYCLIST INJURED
+      std::getline(s, field, ',');
+      row.number_of_cyclists_injured = parseInt(field);
+
+      // 16: NUMBER OF CYCLIST KILLED
+      std::getline(s, field, ',');
+      row.number_of_cyclists_killed = parseInt(field);
+
+      // 17: NUMBER OF MOTORIST INJURED
+      std::getline(s, field, ',');
+      row.number_of_motorists_injured = parseInt(field);
+
+      // 18: NUMBER OF MOTORIST KILLED
+      std::getline(s, field, ',');
+      row.number_of_motorists_killed = parseInt(field);
+
+      // 19: CONTRIBUTING FACTOR VEHICLE 1
+      std::getline(s, field, ',');
+      row.contributing_factor_vehicle_1 = parseString(field);
+
+      // 20: CONTRIBUTING FACTOR VEHICLE 2
+      std::getline(s, field, ',');
+      row.contributing_factor_vehicle_2 = parseString(field);
+
+      // 21: CONTRIBUTING FACTOR VEHICLE 3
+      std::getline(s, field, ',');
+      row.contributing_factor_vehicle_3 = parseString(field);
+
+      // 22: CONTRIBUTING FACTOR VEHICLE 4
+      std::getline(s, field, ',');
+      row.contributing_factor_vehicle_4 = parseString(field);
+
+      // 23: CONTRIBUTING FACTOR VEHICLE 5
+      std::getline(s, field, ',');
+      row.contributing_factor_vehicle_5 = parseString(field);
+
+      // 24: COLLISION_ID
+      std::getline(s, field, ',');
+      row.collision_id = parseInt(field);
+
+      // 25: VEHICLE TYPE CODE 1
+      std::getline(s, field, ',');
+      row.vehicle_type_code_1 = parseString(field);
+
+      // 26: VEHICLE TYPE CODE 2
+      std::getline(s, field, ',');
+      row.vehicle_type_code_2 = parseString(field);
+
+      // 27: VEHICLE TYPE CODE 3
+      std::getline(s, field, ',');
+      row.vehicle_type_code_3 = parseString(field);
+
+      // 28: VEHICLE TYPE CODE 4
+      std::getline(s, field, ',');
+      row.vehicle_type_code_4 = parseString(field);
+
+      // 29: VEHICLE TYPE CODE 5
+      std::getline(s, field, ',');
+      row.vehicle_type_code_5 = parseString(field);
+
+      csv.addRow(row);
+
+      rowNumber++;
+
+    } catch (const std::invalid_argument &e) {
+      ignoredRows++;
+    } catch (const std::out_of_range &e) {
+      ignoredRows++;
+    }
   }
-
+  std::cout << "Ignored Rows = " << ignoredRows << std::endl;
   return csv;
 }
 
-
 int main() {
-  std::string filename =
-      "./Motor_Vehicle_Collisions_-_Crashes_20250210.csv";
+  std::string filename = "./Motor_Vehicle_Collisions_-_Crashes_20250210.csv";
   CSV csv = makeCSV(filename);
 
-  std::cout << "Number of rows: " << csv.rowCount() << std::endl;
-  csv.printHead();
+  std::cout << "Number of rows successfully parsed: " << csv.rowCount()
+            << std::endl;
+  // csv.printHead();
 
   return 0;
 }
