@@ -8,7 +8,7 @@
 
 #include "./parser/CSVRow.h"
 #include "./parser/CSV.h"
-#include "Collision.h" 
+#include "SpatialAnalysis.h" 
 
 // Helper functions to parse CSV values that may be empty or "NULL"
 inline double parseDouble(const std::string &field) {
@@ -182,9 +182,9 @@ int main() {
   
   CSV csv = makeCSV(filename);
 
-  Collision analysis(csv);
-    analysis.performAnalysis();
-    analysis.displayResults();
+  SpatialAnalysis analysis(100, 10);
+    analysis.processCollisions(csv);
+    analysis.identifyHighRiskAreas();
 
   return 0;
 }
