@@ -4,6 +4,8 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <sstream>
+#include <omp.h>
 #include "./parser/CSV.h"
 
 class SpatialAnalysis {

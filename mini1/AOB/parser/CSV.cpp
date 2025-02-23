@@ -4,6 +4,7 @@
 #include <sstream>
 #include <limits>
 #include <algorithm>
+#include <omp.h>
 
 size_t CSV::size() const {
     return rows.size();
@@ -59,7 +60,6 @@ std::vector<std::string> splitCSVLine(const std::string &line) {
 }
 
 CSV makeCSV(const std::string &filename) {
-    int ignoredRows = 0;
     CSV data;
     std::ifstream file(filename);
     if (!file.is_open()) {
@@ -67,9 +67,18 @@ CSV makeCSV(const std::string &filename) {
         return data;
     }
 
+    std::vector<std::string> lines;
     std::string line;
     while (std::getline(file, line)) {
-        auto fields = splitCSVLine(line);
+        lines.push_back(line);
+    }
+
+    int ignoredRows = 0;
+    std::vector<CSVRow> parsedRows(lines.size());
+
+    #pragma omp parallel for reduction(+:ignoredRows)
+    for (size_t i = 0; i < lines.size(); ++i) {
+        auto fields = splitCSVLine(lines[i]);
         if (fields.size() < 29) {
             ignoredRows++;
             continue;
@@ -107,9 +116,16 @@ CSV makeCSV(const std::string &filename) {
             row.vehicle_type_code_4 = parseString(fields[27]);
             row.vehicle_type_code_5 = parseString(fields[28]);
             
-            data.rows.push_back(row);
+            parsedRows[i] = row;
         } catch (const std::exception &e) {
             ignoredRows++;
+        }
+    }
+
+    data.rows.reserve(lines.size() - ignoredRows);
+    for (const auto& row : parsedRows) {
+        if (row.collision_id != std::numeric_limits<int>::min()) {
+            data.rows.push_back(row);
         }
     }
 
