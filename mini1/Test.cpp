@@ -26,10 +26,13 @@ int main() {
 
   // printing the results out
   std::cout << std::setw(8) << "Run #" << " | " << "Time (s)\n";
+  double avg=0;
   std::cout << "----------------------\n";
   for (int i = 0; i < 10; i++) {
     std::cout << std::setw(5) << (i + 1) << "   | " << times[i] << "\n";
+    avg+=times[i];
   }
-
+  std::cout << "----------------------\n";
+  std::cout << "Average: " << avg/10 << "s\n";
   return 0;
 }
