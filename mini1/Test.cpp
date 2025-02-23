@@ -14,9 +14,9 @@ int main() {
     auto start = std::chrono::high_resolution_clock::now();
     // name of file to run
 
-    system(".\\main1.exe");
+    // system(".\\main1.exe");
     // comment out the above line and uncomment the one below for mac and linux systems
-    // system("./main1");
+    system("./main2");
     auto end = std::chrono::high_resolution_clock::now();
 
     double elapsed = std::chrono::duration<double>(end - start).count();

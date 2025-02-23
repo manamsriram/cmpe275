@@ -5,21 +5,21 @@
 SpatialAnalysis::SpatialAnalysis(int injuryThreshold, int deathThreshold)
     : INJURY_THRESHOLD(injuryThreshold), DEATH_THRESHOLD(deathThreshold) {}
 
-void SpatialAnalysis::processCollisions(const CSV& csv) {
-    for (const auto& row : csv.rows) {
-        if (!row.borough.empty() && row.zip_code > 0) {
-            int year = extractYear(row.crash_date);
-            auto& areaStats = boroughZipStats[row.borough][row.zip_code];
+void SpatialAnalysis::processCollisions(const CSV& data) {
+    for (size_t i = 0; i < data.size(); ++i) {
+        if (!data.boroughs[i].empty() && data.zip_codes[i] > 0) {
+            int year = extractYear(data.crash_dates[i]);
+            auto& areaStats = boroughZipStats[data.boroughs[i]][data.zip_codes[i]];
             
             auto it = std::find_if(areaStats.yearlyStats.begin(), areaStats.yearlyStats.end(),
                 [year](const YearlyStats& stats) { return stats.year == year; });
             
             if (it == areaStats.yearlyStats.end()) {
-                areaStats.yearlyStats.push_back({year, 1, row.number_of_persons_injured, row.number_of_persons_killed});
+                areaStats.yearlyStats.push_back({year, 1, data.persons_injured[i], data.persons_killed[i]});
             } else {
                 it->collisionCount++;
-                it->injuryCount += row.number_of_persons_injured;
-                it->deathCount += row.number_of_persons_killed;
+                it->injuryCount += data.persons_injured[i];
+                it->deathCount += data.persons_killed[i];
             }
         }
     }
