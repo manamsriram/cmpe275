@@ -11,20 +11,20 @@ void SpatialAnalysis::processCollisions(const CSV& data) {
             int year = extractYear(data.crash_dates[i]);
             auto& areaStats = boroughZipStats[data.boroughs[i]][data.zip_codes[i]];
             
-            auto it = std::find_if(areaStats.yearlyStats.begin(), areaStats.yearlyStats.end(),
-                [year](const YearlyStats& stats) { return stats.year == year; });
+            auto it = std::lower_bound(areaStats.yearlyStats.begin(), areaStats.yearlyStats.end(), year,
+                [](const YearlyStats& stats, int y) { return stats.year < y; });
             
-            if (it == areaStats.yearlyStats.end()) {
-                areaStats.yearlyStats.push_back({year, 1, data.persons_injured[i], data.persons_killed[i]});
-            } else {
-                it->collisionCount++;
-                it->injuryCount += data.persons_injured[i];
-                it->deathCount += data.persons_killed[i];
+            if (it == areaStats.yearlyStats.end() || it->year != year) {
+                it = areaStats.yearlyStats.insert(it, {year, 0, 0, 0});
             }
+            
+            it->collisionCount++;
+            it->injuryCount += std::max(0, data.persons_injured[i]);
+            it->deathCount += std::max(0, data.persons_killed[i]);
         }
     }
 }
-
+    
 void SpatialAnalysis::identifyHighRiskAreas() const {
     std::cout << "Risk assessment by borough and zip code:\n";
     for (const auto& [borough, zipStats] : boroughZipStats) {
