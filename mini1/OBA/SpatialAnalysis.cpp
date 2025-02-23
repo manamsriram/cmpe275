@@ -2,14 +2,35 @@
 #include <algorithm>
 #include <iostream>
 
+// Attempt at updating code to make it analyze a smaller batch size
+struct SimplifiedCollisionData {
+  std::vector<std::string> crash_dates;
+  std::vector<std::string> boroughs;
+  std::vector<int> zip_codes;
+  std::vector<int> persons_injured;
+  std::vector<int> persons_killed;
+};
+
+SimplifiedCollisionData simplifyCSV(const CSV &data) {
+  SimplifiedCollisionData sim;
+  sim.crash_dates = data.crash_dates;
+  sim.boroughs = data.boroughs;
+  sim.zip_codes = data.zip_codes;
+  sim.persons_injured = data.persons_injured;
+  sim.persons_killed = data.persons_killed;
+  return sim;
+}
+
 SpatialAnalysis::SpatialAnalysis(int injuryThreshold, int deathThreshold)
     : INJURY_THRESHOLD(injuryThreshold), DEATH_THRESHOLD(deathThreshold) {}
 
 void SpatialAnalysis::processCollisions(const CSV &data) {
-  for (size_t i = 0; i < data.size(); ++i) {
-    if (!data.boroughs[i].empty() && data.zip_codes[i] > 0) {
-      int year = extractYear(data.crash_dates[i]);
-      auto &areaStats = boroughZipStats[data.boroughs[i]][data.zip_codes[i]];
+  auto simData = simplifyCSV(data);
+  for (size_t i = 0; i < simData.crash_dates.size(); ++i) {
+    if (!simData.boroughs[i].empty() && simData.zip_codes[i] > 0) {
+      int year = extractYear(simData.crash_dates[i]);
+      auto &areaStats =
+          boroughZipStats[simData.boroughs[i]][simData.zip_codes[i]];
 
       auto it = std::lower_bound(
           areaStats.yearlyStats.begin(), areaStats.yearlyStats.end(), year,
@@ -20,11 +41,33 @@ void SpatialAnalysis::processCollisions(const CSV &data) {
       }
 
       it->collisionCount++;
-      it->injuryCount += std::max(0, data.persons_injured[i]);
-      it->deathCount += std::max(0, data.persons_killed[i]);
+      it->injuryCount += std::max(0, simData.persons_injured[i]);
+      it->deathCount += std::max(0, simData.persons_killed[i]);
     }
   }
 }
+
+// Old implementation
+// void SpatialAnalysis::processCollisions(const CSV &data) {
+//   for (size_t i = 0; i < data.size(); ++i) {
+//     if (!data.boroughs[i].empty() && data.zip_codes[i] > 0) {
+//       int year = extractYear(data.crash_dates[i]);
+//       auto &areaStats = boroughZipStats[data.boroughs[i]][data.zip_codes[i]];
+
+//       auto it = std::lower_bound(
+//           areaStats.yearlyStats.begin(), areaStats.yearlyStats.end(), year,
+//           [](const YearlyStats &stats, int y) { return stats.year < y; });
+
+//       if (it == areaStats.yearlyStats.end() || it->year != year) {
+//         it = areaStats.yearlyStats.insert(it, {year, 0, 0, 0});
+//       }
+
+//       it->collisionCount++;
+//       it->injuryCount += std::max(0, data.persons_injured[i]);
+//       it->deathCount += std::max(0, data.persons_killed[i]);
+//     }
+//   }
+// }
 
 void SpatialAnalysis::identifyHighRiskAreas() const {
   std::cout << "Risk assessment by borough and zip code:\n";
