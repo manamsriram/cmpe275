@@ -1,3 +1,4 @@
+#include "./parser/CSV.h"
 #include "SpatialAnalysis.h"
 #include <iostream>
 #include <algorithm>
@@ -5,11 +6,11 @@
 SpatialAnalysis::SpatialAnalysis(int injuryThreshold, int deathThreshold)
     : INJURY_THRESHOLD(injuryThreshold), DEATH_THRESHOLD(deathThreshold) {}
 
-void SpatialAnalysis::processCollisions(const CSV& data) {
-    for (size_t i = 0; i < data.size(); ++i) {
-        if (!data.boroughs[i].empty() && data.zip_codes[i] > 0) {
-            int year = extractYear(data.crash_dates[i]);
-            auto& areaStats = boroughZipStats[data.boroughs[i]][data.zip_codes[i]];
+void SpatialAnalysis::processCollisions(const std::vector<CSVRow>& data) {
+    for (const auto& row : data) {
+        if (!row.borough.empty() && row.zip_code > 0) {
+            int year = extractYear(row.crash_date);
+            auto& areaStats = boroughZipStats[row.borough][row.zip_code];
             
             auto it = std::lower_bound(areaStats.yearlyStats.begin(), areaStats.yearlyStats.end(), year,
                 [](const YearlyStats& stats, int y) { return stats.year < y; });
@@ -19,11 +20,12 @@ void SpatialAnalysis::processCollisions(const CSV& data) {
             }
             
             it->collisionCount++;
-            it->injuryCount += std::max(0, data.persons_injured[i]);
-            it->deathCount += std::max(0, data.persons_killed[i]);
+            it->injuryCount += std::max(0, row.persons_injured);
+            it->deathCount += std::max(0, row.persons_killed);
         }
     }
 }
+    
     
 void SpatialAnalysis::identifyHighRiskAreas() const {
     std::cout << "Risk assessment by borough and zip code:\n";

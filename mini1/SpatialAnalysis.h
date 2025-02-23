@@ -9,7 +9,7 @@
 class SpatialAnalysis {
 public:
     SpatialAnalysis(int injuryThreshold, int deathThreshold);
-    void processCollisions(const CSV& data);
+    void processCollisions(const std::vector<CSVRow>& data);
     void identifyHighRiskAreas() const;
 
 private:

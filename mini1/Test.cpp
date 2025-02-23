@@ -16,7 +16,7 @@ int main() {
 
     // system(".\\main1.exe");
     // comment out the above line and uncomment the one below for mac and linux systems
-    system("./main2");
+    system("./main1");
     auto end = std::chrono::high_resolution_clock::now();
 
     double elapsed = std::chrono::duration<double>(end - start).count();

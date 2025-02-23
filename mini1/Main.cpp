@@ -15,7 +15,7 @@ int main() {
   CSV csv = makeCSV(filename);
 
   SpatialAnalysis analysis(100, 10);
-    analysis.processCollisions(csv);
+    analysis.processCollisions(csv.rows);
     analysis.identifyHighRiskAreas();
 
   return 0;

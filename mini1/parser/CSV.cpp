@@ -2,12 +2,14 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
-#include <vector>
-#include <string>
 #include <limits>
 #include <algorithm>
 
-inline double parseDouble(const std::string &field) {
+size_t CSV::size() const {
+    return rows.size();
+}
+
+double parseDouble(const std::string &field) {
     if (field.empty() || field == "NULL" || field == "Unspecified")
         return std::numeric_limits<double>::quiet_NaN();
     try {
@@ -17,7 +19,7 @@ inline double parseDouble(const std::string &field) {
     }
 }
 
-inline int parseInt(const std::string &field) {
+int parseInt(const std::string &field) {
     if (field.empty() || field == "NULL" || field == "Unspecified")
         return std::numeric_limits<int>::min();
     try {
@@ -27,7 +29,7 @@ inline int parseInt(const std::string &field) {
     }
 }
 
-inline std::string parseString(const std::string &field) {
+std::string parseString(const std::string &field) {
     return field.empty() || field == "NULL" || field == "Unspecified" ? "" : field;
 }
 
@@ -36,10 +38,6 @@ std::string stripQuotes(const std::string &field) {
         return field.substr(1, field.size() - 2);
     }
     return field;
-}
-
-size_t CSV::size() const {
-    return crash_dates.size();
 }
 
 std::vector<std::string> splitCSVLine(const std::string &line) {
@@ -70,7 +68,6 @@ CSV makeCSV(const std::string &filename) {
     }
 
     std::string line;
-
     while (std::getline(file, line)) {
         auto fields = splitCSVLine(line);
         if (fields.size() < 29) {
@@ -79,35 +76,38 @@ CSV makeCSV(const std::string &filename) {
         }
 
         try {
-            data.crash_dates.push_back(parseString(fields[0]));
-            data.crash_times.push_back(parseString(fields[1]));
-            data.boroughs.push_back(parseString(fields[2]));
-            data.zip_codes.push_back(parseInt(fields[3]));
-            data.latitudes.push_back(parseDouble(fields[4]));
-            data.longitudes.push_back(parseDouble(fields[5]));
-            data.locations.push_back(parseString(fields[6]));
-            data.on_street_names.push_back(parseString(fields[7]));
-            data.cross_street_names.push_back(parseString(fields[8]));
-            data.off_street_names.push_back(parseString(fields[9]));
-            data.persons_injured.push_back(parseInt(fields[10]));
-            data.persons_killed.push_back(parseInt(fields[11]));
-            data.pedestrians_injured.push_back(parseInt(fields[12]));
-            data.pedestrians_killed.push_back(parseInt(fields[13]));
-            data.cyclists_injured.push_back(parseInt(fields[14]));
-            data.cyclists_killed.push_back(parseInt(fields[15]));
-            data.motorists_injured.push_back(parseInt(fields[16]));
-            data.motorists_killed.push_back(parseInt(fields[17]));
-            data.contributing_factor_vehicle_1.push_back(parseString(fields[18]));
-            data.contributing_factor_vehicle_2.push_back(parseString(fields[19]));
-            data.contributing_factor_vehicle_3.push_back(parseString(fields[20]));
-            data.contributing_factor_vehicle_4.push_back(parseString(fields[21]));
-            data.contributing_factor_vehicle_5.push_back(parseString(fields[22]));
-            data.collision_ids.push_back(parseInt(fields[23]));
-            data.vehicle_type_code_1.push_back(parseString(fields[24]));
-            data.vehicle_type_code_2.push_back(parseString(fields[25]));
-            data.vehicle_type_code_3.push_back(parseString(fields[26]));
-            data.vehicle_type_code_4.push_back(parseString(fields[27]));
-            data.vehicle_type_code_5.push_back(parseString(fields[28]));
+            CSVRow row;
+            row.crash_date = parseString(fields[0]);
+            row.crash_time = parseString(fields[1]);
+            row.borough = parseString(fields[2]);
+            row.zip_code = parseInt(fields[3]);
+            row.latitude = parseDouble(fields[4]);
+            row.longitude = parseDouble(fields[5]);
+            row.location = parseString(fields[6]);
+            row.on_street_name = parseString(fields[7]);
+            row.cross_street_name = parseString(fields[8]);
+            row.off_street_name = parseString(fields[9]);
+            row.persons_injured = parseInt(fields[10]);
+            row.persons_killed = parseInt(fields[11]);
+            row.pedestrians_injured = parseInt(fields[12]);
+            row.pedestrians_killed = parseInt(fields[13]);
+            row.cyclists_injured = parseInt(fields[14]);
+            row.cyclists_killed = parseInt(fields[15]);
+            row.motorists_injured = parseInt(fields[16]);
+            row.motorists_killed = parseInt(fields[17]);
+            row.contributing_factor_vehicle_1 = parseString(fields[18]);
+            row.contributing_factor_vehicle_2 = parseString(fields[19]);
+            row.contributing_factor_vehicle_3 = parseString(fields[20]);
+            row.contributing_factor_vehicle_4 = parseString(fields[21]);
+            row.contributing_factor_vehicle_5 = parseString(fields[22]);
+            row.collision_id = parseInt(fields[23]);
+            row.vehicle_type_code_1 = parseString(fields[24]);
+            row.vehicle_type_code_2 = parseString(fields[25]);
+            row.vehicle_type_code_3 = parseString(fields[26]);
+            row.vehicle_type_code_4 = parseString(fields[27]);
+            row.vehicle_type_code_5 = parseString(fields[28]);
+            
+            data.rows.push_back(row);
         } catch (const std::exception &e) {
             ignoredRows++;
         }
