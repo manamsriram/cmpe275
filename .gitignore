@@ -3,3 +3,5 @@ b
 *.csv
 *.exe
 .vscode
+*.pb.*
+*.csv
