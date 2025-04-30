@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package crashreplication;
+
+// A single collision record.
+message CrashRecord {
+  string crash_date                = 1;   // example "09/11/2021"
+  string crash_time                = 2;   // example "2:39"
+  string borough                   = 3;
+  int32 zip_code                   = 4;
+  double latitude                  = 5;
+  double longitude                 = 6;
+  string location                  = 7;
+  string on_street_name            = 8;
+  string cross_street_name         = 9;
+  string off_street_name           = 10;
+  int32 num_persons_injured        = 11;
+  int32 num_persons_killed         = 12;
+  int32 num_pedestrians_injured    = 13;
+  int32 num_pedestrians_killed     = 14;
+  int32 num_cyclist_injured        = 15;
+  int32 num_cyclist_killed         = 16;
+  int32 num_motorist_injured       = 17;
+  int32 num_motorist_killed        = 18;
+  repeated string contributing_factors = 19;
+  int64 collision_id               = 20;
+  repeated string vehicle_types    = 21;
+  int32 row_id = 22;
+}
+
+// Acknowledge receipt
+message Ack {
+  bool success = 1;
+  string message = 2;
+}
+
+// Service for streaming crash records
+service CrashReplicator {
+  // Client-side streaming RPC
+  rpc SendCrashes(stream CrashRecord) returns (Ack);
+}

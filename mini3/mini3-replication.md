@@ -1,4 +1,4 @@
-## Mini 3 - Design a replication elgorithm
+## Mini 3 - Design a replication algorithm
 
 The third installment of mini explorations is giving you an opportunity
 to practice what you have learned in the first minis and studied in class.
