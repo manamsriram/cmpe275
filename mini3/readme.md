@@ -10,7 +10,7 @@ Run guide
 
 In the mini3 folder run 
 
-`python -m server.server`
+`python run_all.py`
 
 In another terminal run
 
