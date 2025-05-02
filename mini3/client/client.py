@@ -124,7 +124,7 @@ def run(csv_file):
             sent += 1
             yield rec
 
-    channel = grpc.insecure_channel("localhost:50051")
+    channel = grpc.insecure_channel("localhost:50056")
     stub = crash_pb2_grpc.CrashReplicatorStub(channel)
 
     logger.info(f"Streaming crash records from {csv_file}...")
