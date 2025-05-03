@@ -55,6 +55,16 @@ class CrashReplicatorStub(object):
                 request_serializer=proto_dot_crash__pb2.LeaderRequest.SerializeToString,
                 response_deserializer=proto_dot_crash__pb2.LeaderResponse.FromString,
                 _registered_method=True)
+        self.HeartbeatAck = channel.unary_unary(
+                '/crashreplication.CrashReplicator/HeartbeatAck',
+                request_serializer=proto_dot_crash__pb2.HeartbeatAckRequest.SerializeToString,
+                response_deserializer=proto_dot_crash__pb2.HeartbeatAckResponse.FromString,
+                _registered_method=True)
+        self.PropagateResourceScore = channel.unary_unary(
+                '/crashreplication.CrashReplicator/PropagateResourceScore',
+                request_serializer=proto_dot_crash__pb2.ResourceScoreRequest.SerializeToString,
+                response_deserializer=proto_dot_crash__pb2.ResourceScoreResponse.FromString,
+                _registered_method=True)
 
 
 class CrashReplicatorServicer(object):
@@ -88,6 +98,18 @@ class CrashReplicatorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def HeartbeatAck(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PropagateResourceScore(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_CrashReplicatorServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -110,6 +132,16 @@ def add_CrashReplicatorServicer_to_server(servicer, server):
                     servicer.GetLeader,
                     request_deserializer=proto_dot_crash__pb2.LeaderRequest.FromString,
                     response_serializer=proto_dot_crash__pb2.LeaderResponse.SerializeToString,
+            ),
+            'HeartbeatAck': grpc.unary_unary_rpc_method_handler(
+                    servicer.HeartbeatAck,
+                    request_deserializer=proto_dot_crash__pb2.HeartbeatAckRequest.FromString,
+                    response_serializer=proto_dot_crash__pb2.HeartbeatAckResponse.SerializeToString,
+            ),
+            'PropagateResourceScore': grpc.unary_unary_rpc_method_handler(
+                    servicer.PropagateResourceScore,
+                    request_deserializer=proto_dot_crash__pb2.ResourceScoreRequest.FromString,
+                    response_serializer=proto_dot_crash__pb2.ResourceScoreResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -221,6 +253,60 @@ class CrashReplicator(object):
             '/crashreplication.CrashReplicator/GetLeader',
             proto_dot_crash__pb2.LeaderRequest.SerializeToString,
             proto_dot_crash__pb2.LeaderResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HeartbeatAck(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/crashreplication.CrashReplicator/HeartbeatAck',
+            proto_dot_crash__pb2.HeartbeatAckRequest.SerializeToString,
+            proto_dot_crash__pb2.HeartbeatAckResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PropagateResourceScore(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/crashreplication.CrashReplicator/PropagateResourceScore',
+            proto_dot_crash__pb2.ResourceScoreRequest.SerializeToString,
+            proto_dot_crash__pb2.ResourceScoreResponse.FromString,
             options,
             channel_credentials,
             insecure,

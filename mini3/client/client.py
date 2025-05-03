@@ -4,6 +4,7 @@ import sys
 import argparse
 import csv
 import logging
+import time
 import grpc
 
 from proto import crash_pb2, crash_pb2_grpc
@@ -190,7 +191,10 @@ if __name__ == "__main__":
         parser.error(f"CSV file not found: {args.csv_file!r}")
 
     try:
+        start_time = time.time()
         run(args.csv_file, args.server)
+        end_time = time.time()
+        print(f"Data streaming completed in {end_time - start_time:.2f} seconds")
     except KeyboardInterrupt:
         logger.info("Interrupted by user, exiting.")
         sys.exit(0)

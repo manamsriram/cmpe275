@@ -37,7 +37,11 @@ message Ack {
 message VoteRequest {
   int32 term = 1;
   string candidate_id = 2;
-  // In a full implementation, you would also include lastLogIndex and lastLogTerm
+  float score = 3;
+  float load_avg = 4;
+  float io_wait = 5;
+  float net_usage_mb = 6;
+  float memory_stored_mb = 7;
 }
 
 message VoteResponse {
@@ -80,6 +84,30 @@ message LeaderResponse {
   int32 leader_port = 3;
 }
 
+message ResourceScoreRequest {
+  string original_requester = 1;
+  repeated string visited_nodes = 2;
+}
+
+message ResourceScoreResponse {
+  string server_id = 1;
+  float score = 2;
+  float load_avg = 3;
+  float io_wait = 4;
+  float net_usage_mb = 5;
+  float memory_stored_mb = 6;
+  repeated ResourceScore collected_scores = 7;
+}
+
+message ResourceScore {
+  string server_id = 1;
+  float score = 2;
+  float load_avg = 3;
+  float io_wait = 4;
+  float net_usage_mb = 5;
+  float memory_stored_mb = 6;
+}
+
 // Service for streaming crash records
 service CrashReplicator {
   // Client-side streaming RPC
@@ -93,4 +121,6 @@ service CrashReplicator {
   rpc GetLeader(LeaderRequest) returns (LeaderResponse);
 
   rpc HeartbeatAck(HeartbeatAckRequest) returns (HeartbeatAckResponse);
+
+  rpc PropagateResourceScore(ResourceScoreRequest) returns (ResourceScoreResponse);
 }
