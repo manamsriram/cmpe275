@@ -40,6 +40,21 @@ class CrashReplicatorStub(object):
                 request_serializer=proto_dot_crash__pb2.CrashRecord.SerializeToString,
                 response_deserializer=proto_dot_crash__pb2.Ack.FromString,
                 _registered_method=True)
+        self.RequestVote = channel.unary_unary(
+                '/crashreplication.CrashReplicator/RequestVote',
+                request_serializer=proto_dot_crash__pb2.VoteRequest.SerializeToString,
+                response_deserializer=proto_dot_crash__pb2.VoteResponse.FromString,
+                _registered_method=True)
+        self.AppendEntries = channel.unary_unary(
+                '/crashreplication.CrashReplicator/AppendEntries',
+                request_serializer=proto_dot_crash__pb2.AppendEntriesRequest.SerializeToString,
+                response_deserializer=proto_dot_crash__pb2.AppendEntriesResponse.FromString,
+                _registered_method=True)
+        self.GetLeader = channel.unary_unary(
+                '/crashreplication.CrashReplicator/GetLeader',
+                request_serializer=proto_dot_crash__pb2.LeaderRequest.SerializeToString,
+                response_deserializer=proto_dot_crash__pb2.LeaderResponse.FromString,
+                _registered_method=True)
 
 
 class CrashReplicatorServicer(object):
@@ -53,6 +68,26 @@ class CrashReplicatorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def RequestVote(self, request, context):
+        """Raft methods
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AppendEntries(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetLeader(self, request, context):
+        """Method for leader discovery
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_CrashReplicatorServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -60,6 +95,21 @@ def add_CrashReplicatorServicer_to_server(servicer, server):
                     servicer.SendCrashes,
                     request_deserializer=proto_dot_crash__pb2.CrashRecord.FromString,
                     response_serializer=proto_dot_crash__pb2.Ack.SerializeToString,
+            ),
+            'RequestVote': grpc.unary_unary_rpc_method_handler(
+                    servicer.RequestVote,
+                    request_deserializer=proto_dot_crash__pb2.VoteRequest.FromString,
+                    response_serializer=proto_dot_crash__pb2.VoteResponse.SerializeToString,
+            ),
+            'AppendEntries': grpc.unary_unary_rpc_method_handler(
+                    servicer.AppendEntries,
+                    request_deserializer=proto_dot_crash__pb2.AppendEntriesRequest.FromString,
+                    response_serializer=proto_dot_crash__pb2.AppendEntriesResponse.SerializeToString,
+            ),
+            'GetLeader': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetLeader,
+                    request_deserializer=proto_dot_crash__pb2.LeaderRequest.FromString,
+                    response_serializer=proto_dot_crash__pb2.LeaderResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -90,6 +140,87 @@ class CrashReplicator(object):
             '/crashreplication.CrashReplicator/SendCrashes',
             proto_dot_crash__pb2.CrashRecord.SerializeToString,
             proto_dot_crash__pb2.Ack.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RequestVote(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/crashreplication.CrashReplicator/RequestVote',
+            proto_dot_crash__pb2.VoteRequest.SerializeToString,
+            proto_dot_crash__pb2.VoteResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AppendEntries(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/crashreplication.CrashReplicator/AppendEntries',
+            proto_dot_crash__pb2.AppendEntriesRequest.SerializeToString,
+            proto_dot_crash__pb2.AppendEntriesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetLeader(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/crashreplication.CrashReplicator/GetLeader',
+            proto_dot_crash__pb2.LeaderRequest.SerializeToString,
+            proto_dot_crash__pb2.LeaderResponse.FromString,
             options,
             channel_credentials,
             insecure,

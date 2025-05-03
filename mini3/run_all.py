@@ -15,7 +15,6 @@ import subprocess
 import time
 import platform
 
-
 def main():
     # Determine config directory
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -50,8 +49,8 @@ def main():
             flags = subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP
             subprocess.Popen(cmd, creationflags=flags)
         elif system == "Darwin":
-            # macOS: open new Terminal window
-            script = f'tell application "Terminal" to do script "{python_exec} -m server.server {cfg}"'
+            # macOS: open new Terminal window with cd command first
+            script = f'tell application "Terminal" to do script "cd Documents/GitHub/cmpe275/mini3 && {python_exec} -m server.server {cfg}"'
             subprocess.Popen(["osascript", "-e", script])
         else:
             # Linux: try gnome-terminal, fall back to xterm

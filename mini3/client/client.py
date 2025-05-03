@@ -112,11 +112,40 @@ def load_crash_records(csv_path):
                 logger.exception(f"Error processing row {idx}, skipping.")
 
 
-def run(csv_file):
+def get_leader_address(initial_server="localhost:50056"):
+    """Connect to initial server and get the leader address"""
+    try:
+        channel = grpc.insecure_channel(initial_server)
+        stub = crash_pb2_grpc.CrashReplicatorStub(channel)
+        
+        # Call the GetLeader RPC to find the current leader
+        response = stub.GetLeader(crash_pb2.LeaderRequest())
+        
+        if response.is_leader:
+            logger.info(f"Initial server {initial_server} is the leader")
+            return initial_server
+        elif response.leader_address:
+            leader_addr = f"{response.leader_address}:{response.leader_port}"
+            logger.info(f"Redirecting to leader at {leader_addr}")
+            return leader_addr
+        else:
+            logger.warning(f"No leader found, using initial server {initial_server}")
+            return initial_server
+            
+    except Exception as e:
+        logger.error(f"Error connecting to initial server: {e}")
+        logger.warning(f"Falling back to initial server {initial_server}")
+        return initial_server
+
+
+def run(csv_file, initial_server="localhost:50056"):
     # -2 because of new line at the end of the CSV and the header line
     with open(csv_file, newline="", encoding="utf-8") as f:
         total_rows = sum(1 for _ in f) - 2
 
+    # Get the leader address
+    leader_address = get_leader_address(initial_server)
+    
     sent = 0
     def generator():
         nonlocal sent
@@ -124,31 +153,44 @@ def run(csv_file):
             sent += 1
             yield rec
 
-    channel = grpc.insecure_channel("localhost:50056")
+    # Connect to the leader
+    channel = grpc.insecure_channel(leader_address)
     stub = crash_pb2_grpc.CrashReplicatorStub(channel)
 
-    logger.info(f"Streaming crash records from {csv_file}...")
-    ack = stub.SendCrashes(generator())
+    logger.info(f"Streaming crash records from {csv_file} to {leader_address}...")
+    
+    try:
+        ack = stub.SendCrashes(generator())
+        
+        skipped = total_rows - sent
+        logger.info(f"Total rows: {total_rows}, Sent: {sent}, Skipped: {skipped}")
 
-    skipped = total_rows - sent
-    logger.info(f"Total rows: {total_rows}, Sent: {sent}, Skipped: {skipped}")
-
-    if ack.success:
-        logger.info(f"Server received: {ack.message}")
-    else:
-        logger.error(f"Server reported failure: {ack.message}")
+        if ack.success:
+            logger.info(f"Server received: {ack.message}")
+        else:
+            logger.error(f"Server reported failure: {ack.message}")
+            
+    except grpc.RpcError as e:
+        if e.code() == grpc.StatusCode.UNAVAILABLE:
+            logger.error(f"Leader unavailable. Leader may have changed. Try again.")
+        else:
+            logger.error(f"RPC error: {e}")
+    except Exception as e:
+        logger.error(f"Error streaming data: {e}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Stream crash CSV to gRPC server")
     parser.add_argument("csv_file", help="Path to the crash CSV file")
+    parser.add_argument("--server", default="localhost:50056", 
+                        help="Initial server address (default: localhost:50056)")
     args = parser.parse_args()
 
     if not args.csv_file or not os.path.isfile(args.csv_file):
         parser.error(f"CSV file not found: {args.csv_file!r}")
 
     try:
-        run(args.csv_file)
+        run(args.csv_file, args.server)
     except KeyboardInterrupt:
         logger.info("Interrupted by user, exiting.")
         sys.exit(0)

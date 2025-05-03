@@ -34,8 +34,63 @@ message Ack {
   string message = 2;
 }
 
+message VoteRequest {
+  int32 term = 1;
+  string candidate_id = 2;
+  // In a full implementation, you would also include lastLogIndex and lastLogTerm
+}
+
+message VoteResponse {
+  int32 term = 1;
+  bool vote_granted = 2;
+  string voter_id = 3;
+}
+
+message HeartbeatAckRequest {
+  int32 term = 1;
+  string follower_id = 2;
+  bool success = 3;
+}
+
+message HeartbeatAckResponse {
+  bool received = 1;
+}
+
+
+message AppendEntriesRequest {
+  int32 term = 1;
+  string leader_id = 2;
+  string message_id = 3;  // For deduplication in flooding
+  int32 ttl = 4;          // To prevent infinite forwarding
+  // In a full implementation, you would include more fields for log replication
+}
+
+message AppendEntriesResponse {
+  int32 term = 1;
+  bool success = 2;
+}
+
+message LeaderRequest {
+  // Empty request
+}
+
+message LeaderResponse {
+  bool is_leader = 1;
+  string leader_address = 2;
+  int32 leader_port = 3;
+}
+
 // Service for streaming crash records
 service CrashReplicator {
   // Client-side streaming RPC
   rpc SendCrashes(stream CrashRecord) returns (Ack);
+  
+  // Raft methods
+  rpc RequestVote(VoteRequest) returns (VoteResponse);
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+
+  // Method for leader discovery
+  rpc GetLeader(LeaderRequest) returns (LeaderResponse);
+
+  rpc HeartbeatAck(HeartbeatAckRequest) returns (HeartbeatAckResponse);
 }
