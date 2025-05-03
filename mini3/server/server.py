@@ -10,6 +10,7 @@ from collections import deque
 from concurrent import futures
 from proto import crash_pb2, crash_pb2_grpc
 
+
 def load_configs(config_path):
     """
     Load all node configs from the same directory as `config_path`.
@@ -30,27 +31,29 @@ def load_configs(config_path):
         adj[nid] = [p["id"] for p in cfg.get("peers", [])]
     return nodes, adj
 
+
 def find_path(adj, start, end):
-     """
-     BFS to find a path from start to end in the adjacency map.
-     Returns a list of node_ids [start, ..., end] or None if no path.
-     """
-     if start == end:
-         return [start]
-     visited = {start}
-     queue = [[start]]
-     while queue:
-         path = queue.pop(0)
-         node = path[-1]
-         for nbr in adj.get(node, []):
-             if nbr in visited:
-                 continue
-             new_path = path + [nbr]
-             if nbr == end:
-                 return new_path
-             visited.add(nbr)
-             queue.append(new_path)
-     return None
+    """
+    BFS to find a path from start to end in the adjacency map.
+    Returns a list of node_ids [start, ..., end] or None if no path.
+    """
+    if start == end:
+        return [start]
+    visited = {start}
+    queue = [[start]]
+    while queue:
+        path = queue.pop(0)
+        node = path[-1]
+        for nbr in adj.get(node, []):
+            if nbr in visited:
+                continue
+            new_path = path + [nbr]
+            if nbr == end:
+                return new_path
+            visited.add(nbr)
+            queue.append(new_path)
+    return None
+
 
 class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
     def __init__(self, node_id, nodes, adj, peers):
@@ -72,7 +75,6 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         self.heartbeat_timer = None
         self.election_timeout = random.uniform(300, 600) / 1000  # 300-600ms
         self.heartbeat_interval = 50 / 1000  # 50ms
-        self.lock = threading.RLock()
 
         t = threading.Thread(target=self._log_store_count, daemon=True)
         t.start()
@@ -94,304 +96,9 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
 
         # track processed row_ids
         self.seen_ids = set()
-        
+
         # Start election timer
         self.reset_election_timer()
-    
-    def _log_store_count(self):
-         while True:
-             time.sleep(10)
-             size_bytes = self.store_size
-             size_mb = size_bytes / (1024 * 1024)
-             count = len(self.store)
-             print(
-                 f"[{self.node_id}] Stored records count: {count}, storage used: {size_bytes} bytes ({size_mb:.2f} MB)"
-             )
-
-    def reset_election_timer(self):
-        with self.lock:
-            if self.election_timer:
-                self.election_timer.cancel()
-            # Random timeout to prevent split votes - increased to 300-600ms
-            timeout = random.uniform(300, 600) / 1000
-            self.election_timer = threading.Timer(timeout, self.start_election)
-            self.election_timer.daemon = True
-            self.election_timer.start()
-            print(f"[{self.node_id}] Reset election timer, will timeout in {timeout:.3f}s")
-
-    def reset_heartbeat_timer(self):
-        with self.lock:
-            if self.heartbeat_timer:
-                self.heartbeat_timer.cancel()
-            self.heartbeat_timer = threading.Timer(self.heartbeat_interval, self.send_heartbeat)
-            self.heartbeat_timer.daemon = True
-            self.heartbeat_timer.start()
-
-    def start_election(self):
-        with self.lock:
-            if self.state == "leader":
-                return
-                
-            # Become candidate
-            self.state = "candidate"
-            self.current_term += 1
-            self.voted_for = self.node_id
-            self.votes_received = 1  # Vote for self
-            self.leader_id = None
-            
-            print(f"[{self.node_id}] Starting election for term {self.current_term}")
-            
-            # Create vote request
-            request = crash_pb2.VoteRequest(
-                term=self.current_term,
-                candidate_id=self.node_id
-            )
-            
-            # Request votes from direct neighbors and propagate
-            for nbr_id in self.adj.get(self.node_id, []):
-                try:
-                    print(f"[{self.node_id}] Sending vote request to {nbr_id}")
-                    response = self.stubs[nbr_id].RequestVote(
-                        request,
-                        metadata=[("seen_nodes", self.node_id)]
-                    )
-                    
-                    # Process response immediately
-                    if self.state != "candidate":
-                        return
-                        
-                    if response.term > self.current_term:
-                        self.current_term = response.term
-                        self.state = "follower"
-                        self.voted_for = None
-                        self.reset_election_timer()
-                        return
-                    
-                    if response.vote_granted:
-                        self.votes_received += 1
-                        print(f"[{self.node_id}] Received vote from {nbr_id}, total: {self.votes_received}")
-                        
-                        if self.votes_received > len(self.nodes) / 2:
-                            self.become_leader()
-                            return
-                except Exception as e:
-                    print(f"[{self.node_id}] Error requesting vote from {nbr_id}: {e}")
-            
-            # DO NOT reset election timer here - this was causing issues
-
-    def RequestVote(self, request, context):
-        meta = dict(context.invocation_metadata())
-        seen_nodes = meta.get("seen_nodes", "")
-        seen_list = seen_nodes.split(",") if seen_nodes else []
-        original_candidate = meta.get("original_candidate", request.candidate_id)
-
-        
-        with self.lock:
-            # If the candidate's term is less than ours, reject
-            if request.term < self.current_term:
-                return crash_pb2.VoteResponse(term=self.current_term, vote_granted=False)
-                
-            # If the candidate's term is greater than ours, update our term
-            if request.term > self.current_term:
-                self.current_term = request.term
-                self.state = "follower"
-                self.is_leader = False
-                self.voted_for = None
-                
-            # If we haven't voted for anyone yet in this term, vote for the candidate
-            vote_granted = False
-            if (self.voted_for is None or self.voted_for == request.candidate_id) and request.term >= self.current_term:
-                self.voted_for = request.candidate_id
-                vote_granted = True
-                # Reset election timer since we received a valid request
-                self.reset_election_timer()
-                
-            print(f"[{self.node_id}] Received vote request from {request.candidate_id}, granted: {vote_granted}")
-            
-            # Forward vote request to neighbors who haven't seen it yet
-            seen_list.append(self.node_id)
-            new_seen = ",".join(seen_list)
-            
-            for nbr_id in self.adj.get(self.node_id, []):
-                if nbr_id not in seen_list:
-                    try:
-                        print(f"[{self.node_id}] Forwarding vote request to {nbr_id}")
-                        self.stubs[nbr_id].RequestVote(
-                            request,
-                            metadata=[("seen_nodes", new_seen)]
-                        )
-                    except Exception as e:
-                        print(f"[{self.node_id}] Error forwarding vote request to {nbr_id}: {e}")
-            
-            # Send response directly to original candidate if not us
-            if original_candidate != self.node_id and original_candidate != request.candidate_id:
-                try:
-                    # Create stub if needed
-                    if original_candidate not in self.stubs:
-                        for node in self.nodes:
-                            if node["id"] == original_candidate:
-                                addr = f"{node['address']}:{node['port']}"
-                                channel = grpc.insecure_channel(addr)
-                                self.stubs[original_candidate] = crash_pb2_grpc.CrashReplicatorStub(channel)
-                    
-                    # Send vote response directly
-                    self.stubs[original_candidate].ReceiveVote(
-                        crash_pb2.VoteResponse(
-                            term=self.current_term,
-                            vote_granted=vote_granted,
-                            voter_id=self.node_id
-                        )
-                    )
-                except Exception as e:
-                    print(f"[{self.node_id}] Error sending vote to original candidate {original_candidate}: {e}")
-
-            return crash_pb2.VoteResponse(term=self.current_term, vote_granted=vote_granted)
-
-    def become_leader(self):
-        with self.lock:
-            if self.state != "candidate":
-                return
-                
-            self.state = "leader"
-            self.is_leader = True
-            self.leader_id = self.node_id
-            print(f"[{self.node_id}] Became leader for term {self.current_term}")
-            
-            # Cancel election timer and start sending heartbeats
-            if self.election_timer:
-                self.election_timer.cancel()
-            self.send_heartbeat()
-
-    def GetLeader(self, request, context):
-        with self.lock:
-            is_leader = self.state == "leader"
-            leader_id = self.leader_id if not is_leader else self.node_id
-            
-            # If we know who the leader is
-            if leader_id:
-                # Find the leader's address and port
-                for node in self.nodes:
-                    if node["id"] == leader_id:
-                        return crash_pb2.LeaderResponse(
-                            is_leader=is_leader,
-                            leader_address=node["address"],
-                            leader_port=node["port"]
-                        )
-            
-            # If we don't know who the leader is
-            return crash_pb2.LeaderResponse(
-                is_leader=is_leader,
-                leader_address="",
-                leader_port=0
-            )
-
-    def send_heartbeat(self):
-        if self.state != "leader":
-            return
-            
-        with self.lock:
-            term = self.current_term
-        
-        print(f"[{self.node_id}] Sending heartbeats for term {term}")
-            
-        for nbr_id in self.adj.get(self.node_id, []):
-            try:
-                request = crash_pb2.AppendEntriesRequest(
-                    term=term,
-                    leader_id=self.node_id
-                )
-                
-                # Initialize seen_nodes with just the leader
-                seen_nodes = self.node_id
-                
-                print(f"[{self.node_id}] Sending heartbeat to {nbr_id}")
-                response = self.stubs[nbr_id].AppendEntries(
-                    request, 
-                    metadata=[("seen_nodes", seen_nodes)]
-                )
-                
-                with self.lock:
-                    if response.term > self.current_term:
-                        self.current_term = response.term
-                        self.state = "follower"
-                        self.is_leader = False
-                        self.voted_for = None
-                        self.reset_election_timer()
-                        return
-            except Exception as e:
-                print(f"[{self.node_id}] Error sending heartbeat to {nbr_id}: {e}")
-        
-        # Schedule next heartbeat
-        self.reset_heartbeat_timer()
-
-    def AppendEntries(self, request, context):
-        meta = dict(context.invocation_metadata())
-        seen_nodes = meta.get("seen_nodes", "")
-        seen_list = seen_nodes.split(",") if seen_nodes else []
-        
-        with self.lock:
-            # If the leader's term is less than ours, reject
-            if request.term < self.current_term:
-                return crash_pb2.AppendEntriesResponse(term=self.current_term, success=False)
-                
-            # Valid leader, reset election timer
-            self.reset_election_timer()
-            
-            # If the leader's term is greater than or equal to ours, update our state
-            if request.term >= self.current_term:
-                self.current_term = request.term
-                self.state = "follower"
-                self.is_leader = False
-                self.leader_id = request.leader_id
-            
-            print(f"[{self.node_id}] Received heartbeat from {request.leader_id} for term {request.term}")
-            
-            # Forward heartbeat to neighbors who haven't seen it yet
-            seen_list.append(self.node_id)
-            new_seen = ",".join(seen_list)
-            
-            for nbr_id in self.adj.get(self.node_id, []):
-                if nbr_id not in seen_list:
-                    try:
-                        print(f"[{self.node_id}] Forwarding heartbeat to {nbr_id}")
-                        self.stubs[nbr_id].AppendEntries(
-                            request,
-                            metadata=[("seen_nodes", new_seen)]
-                        )
-                    except Exception as e:
-                        print(f"[{self.node_id}] Error forwarding heartbeat to {nbr_id}: {e}")
-            
-            original_leader = meta.get("original_leader", request.leader_id)
-            if original_leader != self.node_id and original_leader != request.leader_id:
-                try:
-                    if original_leader not in self.stubs:
-                        # Create stub if needed
-                        for node in self.nodes:
-                            if node["id"] == original_leader:
-                                addr = f"{node['address']}:{node['port']}"
-                                channel = grpc.insecure_channel(addr)
-                                self.stubs[original_leader] = crash_pb2_grpc.CrashReplicatorStub(channel)
-                    
-                    # Send heartbeat ack directly to leader
-                    self.stubs[original_leader].HeartbeatAck(
-                        crash_pb2.HeartbeatAckRequest(
-                            term=self.current_term,
-                            follower_id=self.node_id,
-                            success=True
-                        )
-                    )
-                except Exception as e:
-                    print(f"[{self.node_id}] Error sending heartbeat ack to leader {original_leader}: {e}")
-            
-            # For heartbeats, just acknowledge
-            return crash_pb2.AppendEntriesResponse(term=self.current_term, success=True)
-
-    def _store(self, raw):
-        self.store.append(raw)
-        self.store_size += len(raw)
-        while self.store_size > self.max_store_bytes:
-            old = self.store.popleft()
-            self.store_size -= len(old)
 
     def _log_store_count(self):
         while True:
@@ -402,6 +109,306 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             print(
                 f"[{self.node_id}] Stored records count: {count}, storage used: {size_bytes} bytes ({size_mb:.2f} MB)"
             )
+
+    def reset_election_timer(self):
+        if self.election_timer:
+            self.election_timer.cancel()
+        # Random timeout to prevent split votes - increased to 300-600ms
+        timeout = random.uniform(300, 600) / 1000
+        self.election_timer = threading.Timer(timeout, self.start_election)
+        self.election_timer.daemon = True
+        self.election_timer.start()
+        print(
+            f"[{self.node_id}] Reset election timer, will timeout in {timeout:.3f}s"
+        )
+
+    def reset_heartbeat_timer(self):
+        if self.heartbeat_timer:
+            self.heartbeat_timer.cancel()
+        self.heartbeat_timer = threading.Timer(
+            self.heartbeat_interval, self.send_heartbeat
+        )
+        self.heartbeat_timer.daemon = True
+        self.heartbeat_timer.start()
+
+    def start_election(self):
+        if self.state == "leader":
+            return
+
+        # Become candidate
+        self.state = "candidate"
+        self.current_term += 1
+        self.voted_for = self.node_id
+        self.votes_received = 1  # Vote for self
+        self.leader_id = None
+
+        print(f"[{self.node_id}] Starting election for term {self.current_term}")
+
+        # Create vote request
+        request = crash_pb2.VoteRequest(
+            term=self.current_term, candidate_id=self.node_id
+        )
+
+        # Request votes from direct neighbors and propagate
+        for nbr_id in self.adj.get(self.node_id, []):
+            try:
+                print(f"[{self.node_id}] Sending vote request to {nbr_id}")
+                response = self.stubs[nbr_id].RequestVote(
+                    request, metadata=[("seen_nodes", self.node_id)]
+                )
+
+                # Process response immediately
+                if self.state != "candidate":
+                    return
+
+                if response.term > self.current_term:
+                    self.current_term = response.term
+                    self.state = "follower"
+                    self.voted_for = None
+                    self.reset_election_timer()
+                    return
+
+                if response.vote_granted:
+                    self.votes_received += 1
+                    print(
+                        f"[{self.node_id}] Received vote from {nbr_id}, total: {self.votes_received}"
+                    )
+
+                    if self.votes_received > len(self.nodes) / 2:
+                        self.become_leader()
+                        return
+            except Exception as e:
+                print(f"[{self.node_id}] Error requesting vote from {nbr_id}: {e}")
+
+        # DO NOT reset election timer here - this was causing issues
+
+    def RequestVote(self, request, context):
+        meta = dict(context.invocation_metadata())
+        seen_nodes = meta.get("seen_nodes", "")
+        seen_list = seen_nodes.split(",") if seen_nodes else []
+        original_candidate = meta.get("original_candidate", request.candidate_id)
+
+        # If the candidate's term is less than ours, reject
+        if request.term < self.current_term:
+            return crash_pb2.VoteResponse(
+                term=self.current_term, vote_granted=False
+            )
+
+        # If the candidate's term is greater than ours, update our term
+        if request.term > self.current_term:
+            self.current_term = request.term
+            self.state = "follower"
+            self.is_leader = False
+            self.voted_for = None
+
+        # If we haven't voted for anyone yet in this term, vote for the candidate
+        vote_granted = False
+        if (
+            self.voted_for is None or self.voted_for == request.candidate_id
+        ) and request.term >= self.current_term:
+            self.voted_for = request.candidate_id
+            vote_granted = True
+            # Reset election timer since we received a valid request
+            self.reset_election_timer()
+
+        print(
+            f"[{self.node_id}] Received vote request from {request.candidate_id}, granted: {vote_granted}"
+        )
+
+        # Forward vote request to neighbors who haven't seen it yet
+        seen_list.append(self.node_id)
+        new_seen = ",".join(seen_list)
+
+        for nbr_id in self.adj.get(self.node_id, []):
+            if nbr_id not in seen_list:
+                try:
+                    print(f"[{self.node_id}] Forwarding vote request to {nbr_id}")
+                    self.stubs[nbr_id].RequestVote(
+                        request, metadata=[("seen_nodes", new_seen)]
+                    )
+                except Exception as e:
+                    print(
+                        f"[{self.node_id}] Error forwarding vote request to {nbr_id}: {e}"
+                    )
+
+        # Send response directly to original candidate if not us
+        if (
+            original_candidate != self.node_id
+            and original_candidate != request.candidate_id
+        ):
+            try:
+                # Create stub if needed
+                if original_candidate not in self.stubs:
+                    for node in self.nodes:
+                        if node["id"] == original_candidate:
+                            addr = f"{node['address']}:{node['port']}"
+                            channel = grpc.insecure_channel(addr)
+                            self.stubs[original_candidate] = (
+                                crash_pb2_grpc.CrashReplicatorStub(channel)
+                            )
+
+                # Send vote response directly
+                self.stubs[original_candidate].ReceiveVote(
+                    crash_pb2.VoteResponse(
+                        term=self.current_term,
+                        vote_granted=vote_granted,
+                        voter_id=self.node_id,
+                    )
+                )
+            except Exception as e:
+                print(
+                    f"[{self.node_id}] Error sending vote to original candidate {original_candidate}: {e}"
+                )
+
+        return crash_pb2.VoteResponse(
+            term=self.current_term, vote_granted=vote_granted
+        )
+
+    def become_leader(self):
+        if self.state != "candidate":
+            return
+
+        self.state = "leader"
+        self.is_leader = True
+        self.leader_id = self.node_id
+        print(f"[{self.node_id}] Became leader for term {self.current_term}")
+
+        # Cancel election timer and start sending heartbeats
+        if self.election_timer:
+            self.election_timer.cancel()
+        self.send_heartbeat()
+
+    def GetLeader(self, request, context):
+        is_leader = self.state == "leader"
+        leader_id = self.leader_id if not is_leader else self.node_id
+
+        # If we know who the leader is
+        if leader_id:
+            # Find the leader's address and port
+            for node in self.nodes:
+                if node["id"] == leader_id:
+                    return crash_pb2.LeaderResponse(
+                        is_leader=is_leader,
+                        leader_address=node["address"],
+                        leader_port=node["port"],
+                    )
+
+        # If we don't know who the leader is
+        return crash_pb2.LeaderResponse(
+            is_leader=is_leader, leader_address="", leader_port=0
+        )
+
+    def send_heartbeat(self):
+        if self.state != "leader":
+            return
+
+        term = self.current_term
+
+        print(f"[{self.node_id}] Sending heartbeats for term {term}")
+
+        for nbr_id in self.adj.get(self.node_id, []):
+            try:
+                request = crash_pb2.AppendEntriesRequest(
+                    term=term, leader_id=self.node_id
+                )
+
+                # Initialize seen_nodes with just the leader
+                seen_nodes = self.node_id
+
+                print(f"[{self.node_id}] Sending heartbeat to {nbr_id}")
+                response = self.stubs[nbr_id].AppendEntries(
+                    request, metadata=[("seen_nodes", seen_nodes)]
+                )
+
+                if response.term > self.current_term:
+                    self.current_term = response.term
+                    self.state = "follower"
+                    self.is_leader = False
+                    self.voted_for = None
+                    self.reset_election_timer()
+                    return
+            except Exception as e:
+                print(f"[{self.node_id}] Error sending heartbeat to {nbr_id}: {e}")
+
+        # Schedule next heartbeat
+        self.reset_heartbeat_timer()
+
+    def AppendEntries(self, request, context):
+        meta = dict(context.invocation_metadata())
+        seen_nodes = meta.get("seen_nodes", "")
+        seen_list = seen_nodes.split(",") if seen_nodes else []
+
+        # If the leader's term is less than ours, reject
+        if request.term < self.current_term:
+            return crash_pb2.AppendEntriesResponse(
+                term=self.current_term, success=False
+            )
+
+        # Valid leader, reset election timer
+        self.reset_election_timer()
+
+        # If the leader's term is greater than or equal to ours, update our state
+        if request.term >= self.current_term:
+            self.current_term = request.term
+            self.state = "follower"
+            self.is_leader = False
+            self.leader_id = request.leader_id
+
+        print(
+            f"[{self.node_id}] Received heartbeat from {request.leader_id} for term {request.term}"
+        )
+
+        # Forward heartbeat to neighbors who haven't seen it yet
+        seen_list.append(self.node_id)
+        new_seen = ",".join(seen_list)
+
+        for nbr_id in self.adj.get(self.node_id, []):
+            if nbr_id not in seen_list:
+                try:
+                    print(f"[{self.node_id}] Forwarding heartbeat to {nbr_id}")
+                    self.stubs[nbr_id].AppendEntries(
+                        request, metadata=[("seen_nodes", new_seen)]
+                    )
+                except Exception as e:
+                    print(
+                        f"[{self.node_id}] Error forwarding heartbeat to {nbr_id}: {e}"
+                    )
+
+        original_leader = meta.get("original_leader", request.leader_id)
+        if original_leader != self.node_id and original_leader != request.leader_id:
+            try:
+                if original_leader not in self.stubs:
+                    # Create stub if needed
+                    for node in self.nodes:
+                        if node["id"] == original_leader:
+                            addr = f"{node['address']}:{node['port']}"
+                            channel = grpc.insecure_channel(addr)
+                            self.stubs[original_leader] = (
+                                crash_pb2_grpc.CrashReplicatorStub(channel)
+                            )
+
+                # Send heartbeat ack directly to leader
+                self.stubs[original_leader].HeartbeatAck(
+                    crash_pb2.HeartbeatAckRequest(
+                        term=self.current_term,
+                        follower_id=self.node_id,
+                        success=True,
+                    )
+                )
+            except Exception as e:
+                print(
+                    f"[{self.node_id}] Error sending heartbeat ack to leader {original_leader}: {e}"
+                )
+
+        # For heartbeats, just acknowledge
+        return crash_pb2.AppendEntriesResponse(term=self.current_term, success=True)
+
+    def _store(self, raw):
+        self.store.append(raw)
+        self.store_size += len(raw)
+        while self.store_size > self.max_store_bytes:
+            old = self.store.popleft()
+            self.store_size -= len(old)
 
     def SendCrashes(self, request_iterator, context):
         # capture incoming metadata for this RPC
@@ -471,9 +478,9 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                 try:
                     ack = stub.SendCrashes(one(), metadata=meta_out)
                     if ack.success:
-                        # print(
-                        #     f"[{self.node_id}] Forwarded {rid} to {next_hop} (target {tid}) - ACK received: {ack.message}"
-                        # )
+                        print(
+                            f"[{self.node_id}] Forwarded {rid} to {next_hop} (target {tid}) - ACK received: {ack.message}"
+                        )
                         pass
                     else:
                         print(
@@ -485,16 +492,17 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         return crash_pb2.Ack(success=True, message=f"Processed {count} records")
 
     def HeartbeatAck(self, request, context):
-        with self.lock:
-            if self.state != "leader":
-                return crash_pb2.HeartbeatAckResponse(received=False)
-                
-            print(f"[{self.node_id}] Received heartbeat ack from {request.follower_id} for term {request.term}")
-            
-            # You could track which followers have acknowledged heartbeats
-            # This is useful for monitoring cluster health
-            
-            return crash_pb2.HeartbeatAckResponse(received=True)
+        if self.state != "leader":
+            return crash_pb2.HeartbeatAckResponse(received=False)
+
+        print(
+            f"[{self.node_id}] Received heartbeat ack from {request.follower_id} for term {request.term}"
+        )
+
+        # You could track which followers have acknowledged heartbeats
+        # This is useful for monitoring cluster health
+
+        return crash_pb2.HeartbeatAckResponse(received=True)
 
 
 def serve(config_path):
@@ -505,7 +513,7 @@ def serve(config_path):
     node_id = cfg["node_id"]
     address = cfg["address"]
     port = cfg["port"]
-    
+
     # get peers
     peer_ids = adj.get(node_id, [])
     peers = [n for n in nodes if n["id"] in peer_ids]
@@ -516,7 +524,9 @@ def serve(config_path):
     listen = f"{address}:{port}"
     server.add_insecure_port(listen)
     server.start()
-    print(f"[{node_id}] Listening on {listen}, state={servicer.state}, peers={peer_ids}")
+    print(
+        f"[{node_id}] Listening on {listen}, state={servicer.state}, peers={peer_ids}"
+    )
     try:
         server.wait_for_termination()
     except KeyboardInterrupt:
@@ -525,6 +535,7 @@ def serve(config_path):
             servicer.election_timer.cancel()
         if servicer.heartbeat_timer:
             servicer.heartbeat_timer.cancel()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Start CrashReplicator node")
