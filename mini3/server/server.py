@@ -212,7 +212,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             self.election_timer = threading.Timer(timeout, self.start_election)
             self.election_timer.daemon = True
             self.election_timer.start()
-            print(f"[{self.node_id}] Reset election timer, will timeout in {timeout:.3f}s")
+            # print(f"[{self.node_id}] Reset election timer, will timeout in {timeout:.3f}s")
 
     def reset_heartbeat_timer(self):
         with self.lock:
@@ -393,7 +393,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         with self.lock:
             term = self.current_term
         
-        print(f"[{self.node_id}] Sending heartbeats for term {term}")
+        # print(f"[{self.node_id}] Sending heartbeats for term {term}")
             
         for nbr_id in self.adj.get(self.node_id, []):
             try:
@@ -405,7 +405,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                 # Initialize seen_nodes with just the leader
                 seen_nodes = self.node_id
                 
-                print(f"[{self.node_id}] Sending heartbeat to {nbr_id}")
+                # print(f"[{self.node_id}] Sending heartbeat to {nbr_id}")
                 response = self.stubs[nbr_id].AppendEntries(
                     request, 
                     metadata=[("seen_nodes", seen_nodes)]
@@ -445,7 +445,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                 self.is_leader = False
                 self.leader_id = request.leader_id
             
-            print(f"[{self.node_id}] Received heartbeat from {request.leader_id} for term {request.term}")
+            # print(f"[{self.node_id}] Received heartbeat from {request.leader_id} for term {request.term}")
             
             # Forward heartbeat to neighbors who haven't seen it yet
             seen_list.append(self.node_id)
@@ -454,7 +454,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             for nbr_id in self.adj.get(self.node_id, []):
                 if nbr_id not in seen_list:
                     try:
-                        print(f"[{self.node_id}] Forwarding heartbeat to {nbr_id}")
+                        # print(f"[{self.node_id}] Forwarding heartbeat to {nbr_id}")
                         self.stubs[nbr_id].AppendEntries(
                             request,
                             metadata=[("seen_nodes", new_seen)]
@@ -623,7 +623,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             if self.state != "leader":
                 return crash_pb2.HeartbeatAckResponse(received=False)
                 
-            print(f"[{self.node_id}] Received heartbeat ack from {request.follower_id} for term {request.term}")
+            # print(f"[{self.node_id}] Received heartbeat ack from {request.follower_id} for term {request.term}")
             
             # You could track which followers have acknowledged heartbeats
             # This is useful for monitoring cluster health
