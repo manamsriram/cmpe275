@@ -17,12 +17,8 @@ In another terminal run
 `python -m client.client path_to_csv`
 
 Todo:
-- Message passing optimization (1 way only)
-- Add and remove nodes from system (recheck for leaders)
-- Score and message routing based on score
-- Integration with leader election
-- Health check
-- Query from client (leader must find the replicated data)
+- Score and message routing based on score (lowest wins)
+- Health check (figure out what happens if the check fails: start new election and reconnect network for disconnected nodes. )
 - Network error handling (nodes going down or coming back up)
-- Data updates 
-
+- Query from client (leader must find the replicated data. If old node comes online again, then re-replicate to the old node. If client queries and query returns less
+than replication factor then re-replicate that row. Assign new vector clock value.)
