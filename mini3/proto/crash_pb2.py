@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11proto/crash.proto\x12\x10\x63rashreplication\"\xa4\x04\n\x0b\x43rashRecord\x12\x12\n\ncrash_date\x18\x01 \x01(\t\x12\x12\n\ncrash_time\x18\x02 \x01(\t\x12\x0f\n\x07\x62orough\x18\x03 \x01(\t\x12\x10\n\x08zip_code\x18\x04 \x01(\x05\x12\x10\n\x08latitude\x18\x05 \x01(\x01\x12\x11\n\tlongitude\x18\x06 \x01(\x01\x12\x10\n\x08location\x18\x07 \x01(\t\x12\x16\n\x0eon_street_name\x18\x08 \x01(\t\x12\x19\n\x11\x63ross_street_name\x18\t \x01(\t\x12\x17\n\x0foff_street_name\x18\n \x01(\t\x12\x1b\n\x13num_persons_injured\x18\x0b \x01(\x05\x12\x1a\n\x12num_persons_killed\x18\x0c \x01(\x05\x12\x1f\n\x17num_pedestrians_injured\x18\r \x01(\x05\x12\x1e\n\x16num_pedestrians_killed\x18\x0e \x01(\x05\x12\x1b\n\x13num_cyclist_injured\x18\x0f \x01(\x05\x12\x1a\n\x12num_cyclist_killed\x18\x10 \x01(\x05\x12\x1c\n\x14num_motorist_injured\x18\x11 \x01(\x05\x12\x1b\n\x13num_motorist_killed\x18\x12 \x01(\x05\x12\x1c\n\x14\x63ontributing_factors\x18\x13 \x03(\t\x12\x14\n\x0c\x63ollision_id\x18\x14 \x01(\x03\x12\x15\n\rvehicle_types\x18\x15 \x03(\t\x12\x0e\n\x06row_id\x18\x16 \x01(\x05\"\'\n\x03\x41\x63k\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"\x93\x01\n\x0bVoteRequest\x12\x0c\n\x04term\x18\x01 \x01(\x05\x12\x14\n\x0c\x63\x61ndidate_id\x18\x02 \x01(\t\x12\r\n\x05score\x18\x03 \x01(\x02\x12\x10\n\x08load_avg\x18\x04 \x01(\x02\x12\x0f\n\x07io_wait\x18\x05 \x01(\x02\x12\x14\n\x0cnet_usage_mb\x18\x06 \x01(\x02\x12\x18\n\x10memory_stored_mb\x18\x07 \x01(\x02\"D\n\x0cVoteResponse\x12\x0c\n\x04term\x18\x01 \x01(\x05\x12\x14\n\x0cvote_granted\x18\x02 \x01(\x08\x12\x10\n\x08voter_id\x18\x03 \x01(\t\"I\n\x13HeartbeatAckRequest\x12\x0c\n\x04term\x18\x01 \x01(\x05\x12\x13\n\x0b\x66ollower_id\x18\x02 \x01(\t\x12\x0f\n\x07success\x18\x03 \x01(\x08\"(\n\x14HeartbeatAckResponse\x12\x10\n\x08received\x18\x01 \x01(\x08\"X\n\x14\x41ppendEntriesRequest\x12\x0c\n\x04term\x18\x01 \x01(\x05\x12\x11\n\tleader_id\x18\x02 \x01(\t\x12\x12\n\nmessage_id\x18\x03 \x01(\t\x12\x0b\n\x03ttl\x18\x04 \x01(\x05\"6\n\x15\x41ppendEntriesResponse\x12\x0c\n\x04term\x18\x01 \x01(\x05\x12\x0f\n\x07success\x18\x02 \x01(\x08\"\x0f\n\rLeaderRequest\"P\n\x0eLeaderResponse\x12\x11\n\tis_leader\x18\x01 \x01(\x08\x12\x16\n\x0eleader_address\x18\x02 \x01(\t\x12\x13\n\x0bleader_port\x18\x03 \x01(\x05\"I\n\x14ResourceScoreRequest\x12\x1a\n\x12original_requester\x18\x01 \x01(\t\x12\x15\n\rvisited_nodes\x18\x02 \x03(\t\"\xc7\x01\n\x15ResourceScoreResponse\x12\x11\n\tserver_id\x18\x01 \x01(\t\x12\r\n\x05score\x18\x02 \x01(\x02\x12\x10\n\x08load_avg\x18\x03 \x01(\x02\x12\x0f\n\x07io_wait\x18\x04 \x01(\x02\x12\x14\n\x0cnet_usage_mb\x18\x05 \x01(\x02\x12\x18\n\x10memory_stored_mb\x18\x06 \x01(\x02\x12\x39\n\x10\x63ollected_scores\x18\x07 \x03(\x0b\x32\x1f.crashreplication.ResourceScore\"\x84\x01\n\rResourceScore\x12\x11\n\tserver_id\x18\x01 \x01(\t\x12\r\n\x05score\x18\x02 \x01(\x02\x12\x10\n\x08load_avg\x18\x03 \x01(\x02\x12\x0f\n\x07io_wait\x18\x04 \x01(\x02\x12\x14\n\x0cnet_usage_mb\x18\x05 \x01(\x02\x12\x18\n\x10memory_stored_mb\x18\x06 \x01(\x02\x32\xa2\x04\n\x0f\x43rashReplicator\x12\x45\n\x0bSendCrashes\x12\x1d.crashreplication.CrashRecord\x1a\x15.crashreplication.Ack(\x01\x12L\n\x0bRequestVote\x12\x1d.crashreplication.VoteRequest\x1a\x1e.crashreplication.VoteResponse\x12`\n\rAppendEntries\x12&.crashreplication.AppendEntriesRequest\x1a\'.crashreplication.AppendEntriesResponse\x12N\n\tGetLeader\x12\x1f.crashreplication.LeaderRequest\x1a .crashreplication.LeaderResponse\x12]\n\x0cHeartbeatAck\x12%.crashreplication.HeartbeatAckRequest\x1a&.crashreplication.HeartbeatAckResponse\x12i\n\x16PropagateResourceScore\x12&.crashreplication.ResourceScoreRequest\x1a\'.crashreplication.ResourceScoreResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11proto/crash.proto\x12\x10\x63rashreplication\"\xa4\x04\n\x0b\x43rashRecord\x12\x12\n\ncrash_date\x18\x01 \x01(\t\x12\x12\n\ncrash_time\x18\x02 \x01(\t\x12\x0f\n\x07\x62orough\x18\x03 \x01(\t\x12\x10\n\x08zip_code\x18\x04 \x01(\x05\x12\x10\n\x08latitude\x18\x05 \x01(\x01\x12\x11\n\tlongitude\x18\x06 \x01(\x01\x12\x10\n\x08location\x18\x07 \x01(\t\x12\x16\n\x0eon_street_name\x18\x08 \x01(\t\x12\x19\n\x11\x63ross_street_name\x18\t \x01(\t\x12\x17\n\x0foff_street_name\x18\n \x01(\t\x12\x1b\n\x13num_persons_injured\x18\x0b \x01(\x05\x12\x1a\n\x12num_persons_killed\x18\x0c \x01(\x05\x12\x1f\n\x17num_pedestrians_injured\x18\r \x01(\x05\x12\x1e\n\x16num_pedestrians_killed\x18\x0e \x01(\x05\x12\x1b\n\x13num_cyclist_injured\x18\x0f \x01(\x05\x12\x1a\n\x12num_cyclist_killed\x18\x10 \x01(\x05\x12\x1c\n\x14num_motorist_injured\x18\x11 \x01(\x05\x12\x1b\n\x13num_motorist_killed\x18\x12 \x01(\x05\x12\x1c\n\x14\x63ontributing_factors\x18\x13 \x03(\t\x12\x14\n\x0c\x63ollision_id\x18\x14 \x01(\x03\x12\x15\n\rvehicle_types\x18\x15 \x03(\t\x12\x0e\n\x06row_id\x18\x16 \x01(\x05\"\'\n\x03\x41\x63k\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"L\n\x10NodeStatusUpdate\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x12\n\nis_healthy\x18\x02 \x01(\x08\x12\x13\n\x0breporter_id\x18\x03 \x01(\t\"\x93\x01\n\x0bVoteRequest\x12\x0c\n\x04term\x18\x01 \x01(\x05\x12\x14\n\x0c\x63\x61ndidate_id\x18\x02 \x01(\t\x12\r\n\x05score\x18\x03 \x01(\x02\x12\x10\n\x08load_avg\x18\x04 \x01(\x02\x12\x0f\n\x07io_wait\x18\x05 \x01(\x02\x12\x14\n\x0cnet_usage_mb\x18\x06 \x01(\x02\x12\x18\n\x10memory_stored_mb\x18\x07 \x01(\x02\"D\n\x0cVoteResponse\x12\x0c\n\x04term\x18\x01 \x01(\x05\x12\x14\n\x0cvote_granted\x18\x02 \x01(\x08\x12\x10\n\x08voter_id\x18\x03 \x01(\t\"I\n\x13HeartbeatAckRequest\x12\x0c\n\x04term\x18\x01 \x01(\x05\x12\x13\n\x0b\x66ollower_id\x18\x02 \x01(\t\x12\x0f\n\x07success\x18\x03 \x01(\x08\"(\n\x14HeartbeatAckResponse\x12\x10\n\x08received\x18\x01 \x01(\x08\"X\n\x14\x41ppendEntriesRequest\x12\x0c\n\x04term\x18\x01 \x01(\x05\x12\x11\n\tleader_id\x18\x02 \x01(\t\x12\x12\n\nmessage_id\x18\x03 \x01(\t\x12\x0b\n\x03ttl\x18\x04 \x01(\x05\"6\n\x15\x41ppendEntriesResponse\x12\x0c\n\x04term\x18\x01 \x01(\x05\x12\x0f\n\x07success\x18\x02 \x01(\x08\"B\n\x0eServerEndpoint\x12\x11\n\tserver_id\x18\x01 \x01(\t\x12\x0f\n\x07\x61\x64\x64ress\x18\x02 \x01(\t\x12\x0c\n\x04port\x18\x03 \x01(\x05\"\x0f\n\rLeaderRequest\"\x8c\x01\n\x0eLeaderResponse\x12\x11\n\tis_leader\x18\x01 \x01(\x08\x12\x16\n\x0eleader_address\x18\x02 \x01(\t\x12\x13\n\x0bleader_port\x18\x03 \x01(\x05\x12:\n\x10server_endpoints\x18\x04 \x03(\x0b\x32 .crashreplication.ServerEndpoint\"I\n\x14ResourceScoreRequest\x12\x1a\n\x12original_requester\x18\x01 \x01(\t\x12\x15\n\rvisited_nodes\x18\x02 \x03(\t\"\xc7\x01\n\x15ResourceScoreResponse\x12\x11\n\tserver_id\x18\x01 \x01(\t\x12\r\n\x05score\x18\x02 \x01(\x02\x12\x10\n\x08load_avg\x18\x03 \x01(\x02\x12\x0f\n\x07io_wait\x18\x04 \x01(\x02\x12\x14\n\x0cnet_usage_mb\x18\x05 \x01(\x02\x12\x18\n\x10memory_stored_mb\x18\x06 \x01(\x02\x12\x39\n\x10\x63ollected_scores\x18\x07 \x03(\x0b\x32\x1f.crashreplication.ResourceScore\"\x84\x01\n\rResourceScore\x12\x11\n\tserver_id\x18\x01 \x01(\t\x12\r\n\x05score\x18\x02 \x01(\x02\x12\x10\n\x08load_avg\x18\x03 \x01(\x02\x12\x0f\n\x07io_wait\x18\x04 \x01(\x02\x12\x14\n\x0cnet_usage_mb\x18\x05 \x01(\x02\x12\x18\n\x10memory_stored_mb\x18\x06 \x01(\x02\x32\xf1\x04\n\x0f\x43rashReplicator\x12\x45\n\x0bSendCrashes\x12\x1d.crashreplication.CrashRecord\x1a\x15.crashreplication.Ack(\x01\x12L\n\x0bRequestVote\x12\x1d.crashreplication.VoteRequest\x1a\x1e.crashreplication.VoteResponse\x12`\n\rAppendEntries\x12&.crashreplication.AppendEntriesRequest\x1a\'.crashreplication.AppendEntriesResponse\x12N\n\tGetLeader\x12\x1f.crashreplication.LeaderRequest\x1a .crashreplication.LeaderResponse\x12]\n\x0cHeartbeatAck\x12%.crashreplication.HeartbeatAckRequest\x1a&.crashreplication.HeartbeatAckResponse\x12i\n\x16PropagateResourceScore\x12&.crashreplication.ResourceScoreRequest\x1a\'.crashreplication.ResourceScoreResponse\x12M\n\x10UpdateNodeStatus\x12\".crashreplication.NodeStatusUpdate\x1a\x15.crashreplication.Ackb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -35,28 +35,32 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_CRASHRECORD']._serialized_end=588
   _globals['_ACK']._serialized_start=590
   _globals['_ACK']._serialized_end=629
-  _globals['_VOTEREQUEST']._serialized_start=632
-  _globals['_VOTEREQUEST']._serialized_end=779
-  _globals['_VOTERESPONSE']._serialized_start=781
-  _globals['_VOTERESPONSE']._serialized_end=849
-  _globals['_HEARTBEATACKREQUEST']._serialized_start=851
-  _globals['_HEARTBEATACKREQUEST']._serialized_end=924
-  _globals['_HEARTBEATACKRESPONSE']._serialized_start=926
-  _globals['_HEARTBEATACKRESPONSE']._serialized_end=966
-  _globals['_APPENDENTRIESREQUEST']._serialized_start=968
-  _globals['_APPENDENTRIESREQUEST']._serialized_end=1056
-  _globals['_APPENDENTRIESRESPONSE']._serialized_start=1058
-  _globals['_APPENDENTRIESRESPONSE']._serialized_end=1112
-  _globals['_LEADERREQUEST']._serialized_start=1114
-  _globals['_LEADERREQUEST']._serialized_end=1129
-  _globals['_LEADERRESPONSE']._serialized_start=1131
-  _globals['_LEADERRESPONSE']._serialized_end=1211
-  _globals['_RESOURCESCOREREQUEST']._serialized_start=1213
-  _globals['_RESOURCESCOREREQUEST']._serialized_end=1286
-  _globals['_RESOURCESCORERESPONSE']._serialized_start=1289
-  _globals['_RESOURCESCORERESPONSE']._serialized_end=1488
-  _globals['_RESOURCESCORE']._serialized_start=1491
-  _globals['_RESOURCESCORE']._serialized_end=1623
-  _globals['_CRASHREPLICATOR']._serialized_start=1626
-  _globals['_CRASHREPLICATOR']._serialized_end=2172
+  _globals['_NODESTATUSUPDATE']._serialized_start=631
+  _globals['_NODESTATUSUPDATE']._serialized_end=707
+  _globals['_VOTEREQUEST']._serialized_start=710
+  _globals['_VOTEREQUEST']._serialized_end=857
+  _globals['_VOTERESPONSE']._serialized_start=859
+  _globals['_VOTERESPONSE']._serialized_end=927
+  _globals['_HEARTBEATACKREQUEST']._serialized_start=929
+  _globals['_HEARTBEATACKREQUEST']._serialized_end=1002
+  _globals['_HEARTBEATACKRESPONSE']._serialized_start=1004
+  _globals['_HEARTBEATACKRESPONSE']._serialized_end=1044
+  _globals['_APPENDENTRIESREQUEST']._serialized_start=1046
+  _globals['_APPENDENTRIESREQUEST']._serialized_end=1134
+  _globals['_APPENDENTRIESRESPONSE']._serialized_start=1136
+  _globals['_APPENDENTRIESRESPONSE']._serialized_end=1190
+  _globals['_SERVERENDPOINT']._serialized_start=1192
+  _globals['_SERVERENDPOINT']._serialized_end=1258
+  _globals['_LEADERREQUEST']._serialized_start=1260
+  _globals['_LEADERREQUEST']._serialized_end=1275
+  _globals['_LEADERRESPONSE']._serialized_start=1278
+  _globals['_LEADERRESPONSE']._serialized_end=1418
+  _globals['_RESOURCESCOREREQUEST']._serialized_start=1420
+  _globals['_RESOURCESCOREREQUEST']._serialized_end=1493
+  _globals['_RESOURCESCORERESPONSE']._serialized_start=1496
+  _globals['_RESOURCESCORERESPONSE']._serialized_end=1695
+  _globals['_RESOURCESCORE']._serialized_start=1698
+  _globals['_RESOURCESCORE']._serialized_end=1830
+  _globals['_CRASHREPLICATOR']._serialized_start=1833
+  _globals['_CRASHREPLICATOR']._serialized_end=2458
 # @@protoc_insertion_point(module_scope)

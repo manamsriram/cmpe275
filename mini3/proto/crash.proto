@@ -34,6 +34,12 @@ message Ack {
   string message = 2;
 }
 
+message NodeStatusUpdate {
+  string node_id = 1;
+  bool is_healthy = 2;
+  string reporter_id = 3;
+}
+
 message VoteRequest {
   int32 term = 1;
   string candidate_id = 2;
@@ -74,6 +80,12 @@ message AppendEntriesResponse {
   bool success = 2;
 }
 
+message ServerEndpoint {
+  string server_id = 1;
+  string address = 2;
+  int32 port = 3;
+}
+
 message LeaderRequest {
   // Empty request
 }
@@ -82,6 +94,7 @@ message LeaderResponse {
   bool is_leader = 1;
   string leader_address = 2;
   int32 leader_port = 3;
+  repeated ServerEndpoint server_endpoints = 4; 
 }
 
 message ResourceScoreRequest {
@@ -123,4 +136,6 @@ service CrashReplicator {
   rpc HeartbeatAck(HeartbeatAckRequest) returns (HeartbeatAckResponse);
 
   rpc PropagateResourceScore(ResourceScoreRequest) returns (ResourceScoreResponse);
+
+  rpc UpdateNodeStatus(NodeStatusUpdate) returns (Ack);
 }

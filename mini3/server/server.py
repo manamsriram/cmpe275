@@ -79,6 +79,15 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         self.score_row_threshold = 10000  # Calculate every 10,000 rows
         self.lock = threading.RLock()
 
+        # Add these variables for failure detection and backoff
+        self.node_health = {n["id"]: True for n in nodes}  # Track node health
+        self.heartbeat_failures = {}  # Maps node_id to failure count
+        self.backoff_until = {}       # Maps node_id to timestamp when to retry
+        self.initial_backoff = 1      # 1 second initial backoff
+        self.max_backoff = 30         # Maximum 30 seconds backoff
+        self.backoff_factor = 2       # Double the backoff each time
+        self.failure_threshold = 3    # Number of failures before marking node as down
+
         t = threading.Thread(target=self._log_store_count, daemon=True)
         t.start()
 
@@ -143,8 +152,6 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             "memory_stored_mb": memory_stored
         }
 
-
-
     def PropagateResourceScore(self, request, context):
         """Propagate resource score request through the network"""
         # Track visited nodes to prevent cycles
@@ -202,6 +209,19 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             collected_scores=collected_scores
         )
 
+    def update_topology(self, nodes_changed=True):
+        """Update routing tables when nodes change"""
+        # Invalidate cached paths
+        self.path_cache = {}
+        
+        # If nodes changed, start a new election
+        if nodes_changed:
+            print(f"[{self.node_id}] Network topology changed, starting new election")
+            self.state = "follower"
+            self.is_leader = False
+            self.voted_for = None
+            self.start_election()
+
 
     def reset_election_timer(self):
         with self.lock:
@@ -245,7 +265,6 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                 load_avg=my_score["load_avg"],
                 io_wait=my_score["io_wait"]
             )
-
             
             # Request votes from direct neighbors and propagate
             for nbr_id in self.adj.get(self.node_id, []):
@@ -276,6 +295,10 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                             return
                 except Exception as e:
                     print(f"[{self.node_id}] Error requesting vote from {nbr_id}: {e}")
+            if self.state == "candidate":
+                # Add randomized backoff before next election
+                timeout = random.uniform(300, 600) / 1000
+                threading.Timer(timeout, self.reset_election_timer).start()
             
             # DO NOT reset election timer here - this was causing issues
 
@@ -358,32 +381,60 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             self.leader_id = self.node_id
             print(f"[{self.node_id}] Became leader for term {self.current_term}")
             
+            # Recompute all paths from this leader to other nodes
+            self.path_cache = {}
+            for node in self.nodes:
+                if node["id"] != self.node_id:
+                    path = find_path(self.adj, self.node_id, node["id"])
+                    if path:
+                        self.path_cache[(self.node_id, node["id"])] = path
+            
             # Cancel election timer and start sending heartbeats
             if self.election_timer:
                 self.election_timer.cancel()
             self.send_heartbeat()
+
 
     def GetLeader(self, request, context):
         with self.lock:
             is_leader = self.state == "leader"
             leader_id = self.leader_id if not is_leader else self.node_id
             
-            # If we know who the leader is
+            # Create a list of known server endpoints from our adjacency list
+            server_endpoints = []
+            for node_id in self.adj.get(self.node_id, []):
+                node = next((n for n in self.nodes if n["id"] == node_id), None)
+                if node:
+                    server_endpoints.append(crash_pb2.ServerEndpoint(
+                        server_id=node["id"],
+                        address=node["address"],
+                        port=node["port"]
+                    ))
+            
+            # Add ourselves to the endpoints
+            my_node = next((n for n in self.nodes if n["id"] == self.node_id), None)
+            if my_node:
+                server_endpoints.append(crash_pb2.ServerEndpoint(
+                    server_id=self.node_id,
+                    address=my_node["address"],
+                    port=my_node["port"]
+                ))
+            
+            # Find the leader's address and port
+            leader_address = ""
+            leader_port = 0
             if leader_id:
-                # Find the leader's address and port
                 for node in self.nodes:
                     if node["id"] == leader_id:
-                        return crash_pb2.LeaderResponse(
-                            is_leader=is_leader,
-                            leader_address=node["address"],
-                            leader_port=node["port"]
-                        )
+                        leader_address = node["address"]
+                        leader_port = node["port"]
+                        break
             
-            # If we don't know who the leader is
             return crash_pb2.LeaderResponse(
                 is_leader=is_leader,
-                leader_address="",
-                leader_port=0
+                leader_address=leader_address,
+                leader_port=leader_port,
+                server_endpoints=server_endpoints
             )
 
     def send_heartbeat(self):
@@ -393,9 +444,13 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         with self.lock:
             term = self.current_term
         
-        # print(f"[{self.node_id}] Sending heartbeats for term {term}")
-            
+        current_time = time.time()
+        
         for nbr_id in self.adj.get(self.node_id, []):
+            # Skip nodes in backoff period
+            if nbr_id in self.backoff_until and current_time < self.backoff_until[nbr_id]:
+                continue
+                
             try:
                 request = crash_pb2.AppendEntriesRequest(
                     term=term,
@@ -405,11 +460,21 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                 # Initialize seen_nodes with just the leader
                 seen_nodes = self.node_id
                 
-                # print(f"[{self.node_id}] Sending heartbeat to {nbr_id}")
                 response = self.stubs[nbr_id].AppendEntries(
                     request, 
-                    metadata=[("seen_nodes", seen_nodes)]
+                    metadata=[("seen_nodes", seen_nodes), ("failed_nodes", ",".join([n for n in self.node_health if not self.node_health[n]]))]
                 )
+                
+                # Successful heartbeat, reset failure count
+                self.heartbeat_failures[nbr_id] = 0
+                if nbr_id in self.backoff_until:
+                    del self.backoff_until[nbr_id]
+                
+                # Mark node as healthy
+                if not self.node_health.get(nbr_id, True):
+                    print(f"[{self.node_id}] Node {nbr_id} is back online")
+                    self.node_health[nbr_id] = True
+                    self.propagate_node_status(nbr_id, True)
                 
                 with self.lock:
                     if response.term > self.current_term:
@@ -420,15 +485,107 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                         self.reset_election_timer()
                         return
             except Exception as e:
+                # Implement exponential backoff
+                failure_count = self.heartbeat_failures.get(nbr_id, 0) + 1
+                self.heartbeat_failures[nbr_id] = failure_count
+                
+                # Calculate backoff time with exponential increase
+                backoff_seconds = min(
+                    self.initial_backoff * (self.backoff_factor ** (failure_count - 1)),
+                    self.max_backoff
+                )
+                
+                # Add jitter to prevent synchronized retries
+                jitter = random.uniform(0.8, 1.2)
+                backoff_with_jitter = backoff_seconds * jitter
+                
+                # Set timestamp for next retry attempt
+                self.backoff_until[nbr_id] = current_time + backoff_with_jitter
+                
                 print(f"[{self.node_id}] Error sending heartbeat to {nbr_id}: {e}")
+                print(f"[{self.node_id}] Backing off for {backoff_with_jitter:.2f}s before retrying {nbr_id} (attempt {failure_count})")
+                
+                # Mark node as failed after threshold
+                if failure_count >= self.failure_threshold and self.node_health.get(nbr_id, True):
+                    print(f"[{self.node_id}] Marking node {nbr_id} as failed after {failure_count} attempts")
+                    self.node_health[nbr_id] = False
+                    self.propagate_node_status(nbr_id, False)
+                    self.update_topology()
         
         # Schedule next heartbeat
         self.reset_heartbeat_timer()
+
+    def propagate_node_status(self, failed_node_id, is_healthy):
+        """Propagate node status changes to all other nodes"""
+        for nbr_id in self.adj.get(self.node_id, []):
+            if nbr_id != failed_node_id and self.node_health.get(nbr_id, False):
+                try:
+                    request = crash_pb2.NodeStatusUpdate(
+                        node_id=failed_node_id,
+                        is_healthy=is_healthy,
+                        reporter_id=self.node_id
+                    )
+                    self.stubs[nbr_id].UpdateNodeStatus(request)
+                except Exception as e:
+                    print(f"[{self.node_id}] Error propagating status of {failed_node_id} to {nbr_id}: {e}")
+
+    def UpdateNodeStatus(self, request, context):
+        """Handle node status updates from other nodes"""
+        node_id = request.node_id
+        is_healthy = request.is_healthy
+        reporter_id = request.reporter_id
+        
+        # Update our view of node health
+        if self.node_health.get(node_id, True) != is_healthy:
+            self.node_health[node_id] = is_healthy
+            print(f"[{self.node_id}] Received status update: Node {node_id} is {'healthy' if is_healthy else 'failed'} (reported by {reporter_id})")
+            
+            # Update topology if node is down
+            if not is_healthy:
+                self.update_topology()
+                
+            # Propagate to other neighbors (except reporter)
+            for nbr_id in self.adj.get(self.node_id, []):
+                if nbr_id != reporter_id and nbr_id != node_id and self.node_health.get(nbr_id, False):
+                    try:
+                        self.stubs[nbr_id].UpdateNodeStatus(request)
+                    except Exception:
+                        pass
+        
+        return crash_pb2.Ack(success=True)
+
+    def update_topology(self):
+        """Update routing tables when nodes fail"""
+        # Invalidate cached paths containing failed nodes
+        invalid_paths = []
+        for key, path in self.path_cache.items():
+            if any(node in path and not self.node_health.get(node, True) for node in path):
+                invalid_paths.append(key)
+        
+        for key in invalid_paths:
+            del self.path_cache[key]
+            
+        print(f"[{self.node_id}] Updated topology after node failures, invalidated {len(invalid_paths)} cached paths")
+
 
     def AppendEntries(self, request, context):
         meta = dict(context.invocation_metadata())
         seen_nodes = meta.get("seen_nodes", "")
         seen_list = seen_nodes.split(",") if seen_nodes else []
+
+         # Get failed nodes information
+        failed_nodes = meta.get("failed_nodes", "")
+        failed_list = failed_nodes.split(",") if failed_nodes else []
+
+        # Update our view of node health based on leader's information
+        for node_id in failed_list:
+            if node_id and self.node_health.get(node_id, False):
+                self.node_health[node_id] = False
+                print(f"[{self.node_id}] Learned that node {node_id} is down from heartbeat metadata")
+                self.update_topology()
+        
+        # Get original leader from metadata or use the request's leader_id
+        original_leader = meta.get("original_leader", request.leader_id)
         
         with self.lock:
             # If the leader's term is less than ours, reject
@@ -445,35 +602,74 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                 self.is_leader = False
                 self.leader_id = request.leader_id
             
-            # print(f"[{self.node_id}] Received heartbeat from {request.leader_id} for term {request.term}")
-            
             # Forward heartbeat to neighbors who haven't seen it yet
             seen_list.append(self.node_id)
             new_seen = ",".join(seen_list)
             
+            current_time = time.time()
+            
             for nbr_id in self.adj.get(self.node_id, []):
                 if nbr_id not in seen_list:
+                    # Skip nodes in backoff period
+                    if nbr_id in self.backoff_until and current_time < self.backoff_until[nbr_id]:
+                        continue
+                        
                     try:
-                        # print(f"[{self.node_id}] Forwarding heartbeat to {nbr_id}")
+                        # Include original_leader in metadata when forwarding
                         self.stubs[nbr_id].AppendEntries(
                             request,
-                            metadata=[("seen_nodes", new_seen)]
+                            metadata=[
+                                ("seen_nodes", new_seen),
+                                ("original_leader", original_leader)
+                            ]
                         )
+                        
+                        # Successful forward, reset failure count
+                        self.heartbeat_failures[nbr_id] = 0
+                        if nbr_id in self.backoff_until:
+                            del self.backoff_until[nbr_id]
+                            
                     except Exception as e:
+                        # Implement exponential backoff
+                        failure_count = self.heartbeat_failures.get(nbr_id, 0) + 1
+                        self.heartbeat_failures[nbr_id] = failure_count
+                        
+                        # Calculate backoff time with exponential increase
+                        backoff_seconds = min(
+                            self.initial_backoff * (self.backoff_factor ** (failure_count - 1)),
+                            self.max_backoff
+                        )
+                        
+                        # Add jitter to prevent synchronized retries (±20%)
+                        jitter = random.uniform(0.8, 1.2)
+                        backoff_with_jitter = backoff_seconds * jitter
+                        
+                        # Set timestamp for next retry attempt
+                        self.backoff_until[nbr_id] = current_time + backoff_with_jitter
+                        
                         print(f"[{self.node_id}] Error forwarding heartbeat to {nbr_id}: {e}")
-            
-            original_leader = meta.get("original_leader", request.leader_id)
-            if original_leader != self.node_id and original_leader != request.leader_id:
-                try:
-                    if original_leader not in self.stubs:
-                        # Create stub if needed
-                        for node in self.nodes:
-                            if node["id"] == original_leader:
-                                addr = f"{node['address']}:{node['port']}"
-                                channel = grpc.insecure_channel(addr)
-                                self.stubs[original_leader] = crash_pb2_grpc.CrashReplicatorStub(channel)
-                    
-                    # Send heartbeat ack directly to leader
+                        print(f"[{self.node_id}] Backing off for {backoff_with_jitter:.2f}s before retrying {nbr_id}")
+        
+        # Send ack back to the original leader with backoff handling
+        if original_leader != self.node_id and original_leader != request.leader_id:
+            # Skip if in backoff period
+            if original_leader in self.backoff_until and current_time < self.backoff_until[original_leader]:
+                return crash_pb2.AppendEntriesResponse(term=self.current_term, success=True)
+                
+            try:
+                # Use cached stub or create a new one safely
+                if original_leader not in self.stubs:
+                    leader_node = next((n for n in self.nodes if n["id"] == original_leader), None)
+                    if leader_node:
+                        addr = f"{leader_node['address']}:{leader_node['port']}"
+                        try:
+                            channel = grpc.insecure_channel(addr)
+                            self.stubs[original_leader] = crash_pb2_grpc.CrashReplicatorStub(channel)
+                        except Exception as e:
+                            print(f"[{self.node_id}] Error creating stub for leader {original_leader}: {e}")
+                            return crash_pb2.AppendEntriesResponse(term=self.current_term, success=True)
+                
+                if original_leader in self.stubs:
                     self.stubs[original_leader].HeartbeatAck(
                         crash_pb2.HeartbeatAckRequest(
                             term=self.current_term,
@@ -481,11 +677,35 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                             success=True
                         )
                     )
-                except Exception as e:
-                    print(f"[{self.node_id}] Error sending heartbeat ack to leader {original_leader}: {e}")
-            
-            # For heartbeats, just acknowledge
-            return crash_pb2.AppendEntriesResponse(term=self.current_term, success=True)
+                    
+                    # Successful ack, reset failure count
+                    self.heartbeat_failures[original_leader] = 0
+                    if original_leader in self.backoff_until:
+                        del self.backoff_until[original_leader]
+                        
+            except Exception as e:
+                # Implement exponential backoff
+                failure_count = self.heartbeat_failures.get(original_leader, 0) + 1
+                self.heartbeat_failures[original_leader] = failure_count
+                
+                # Calculate backoff time with exponential increase
+                backoff_seconds = min(
+                    self.initial_backoff * (self.backoff_factor ** (failure_count - 1)),
+                    self.max_backoff
+                )
+                
+                # Add jitter to prevent synchronized retries
+                jitter = random.uniform(0.8, 1.2)
+                backoff_with_jitter = backoff_seconds * jitter
+                
+                # Set timestamp for next retry attempt
+                self.backoff_until[original_leader] = current_time + backoff_with_jitter
+                
+                print(f"[{self.node_id}] Error sending heartbeat ack to leader {original_leader}: {e}")
+                print(f"[{self.node_id}] Backing off for {backoff_with_jitter:.2f}s before retrying {original_leader}")
+        
+        return crash_pb2.AppendEntriesResponse(term=self.current_term, success=True)
+
 
     def _store(self, raw):
         self.store.append(raw)
