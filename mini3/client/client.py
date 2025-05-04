@@ -110,39 +110,48 @@ def load_crash_records(csv_path):
                 logger.exception(f"Error processing row {idx}, skipping.")
 
 
-def get_leader_address(initial_server="localhost:50056"):
-    """Connect to initial server and get the leader address and all known servers"""
-    try:
-        channel = grpc.insecure_channel(initial_server)
-        stub = crash_pb2_grpc.CrashReplicatorStub(channel)
-        
-        # Call the GetLeader RPC to find the current leader
-        response = stub.GetLeader(crash_pb2.LeaderRequest())
-        
-        known_servers = [initial_server]  # Always include our initial server
-        leader_addr = initial_server  # Default to initial server
-        
-        if response.is_leader:
-            logger.info(f"Initial server {initial_server} is the leader")
-            leader_addr = initial_server
-        elif response.leader_address:
-            leader_addr = f"{response.leader_address}:{response.leader_port}"
-            logger.info(f"Redirecting to leader at {leader_addr}")
-        else:
-            logger.warning(f"No leader found, using initial server {initial_server}")
-        
-        # Add server endpoints to known servers list
-        for endpoint in response.server_endpoints:
-            server_addr = f"{endpoint.address}:{endpoint.port}"
-            if server_addr not in known_servers:
-                known_servers.append(server_addr)
-        
-        return leader_addr, known_servers
+def get_leader_address(initial_server="localhost:50056", known_servers=None):
+    """Connect to any available server and get the leader address"""
+    if known_servers is None:
+        known_servers = [initial_server]
+    elif initial_server not in known_servers:
+        known_servers.append(initial_server)
+    
+    # Try each server until we find one that responds
+    all_discovered_servers = set()
+    leader_addr = None
+    
+    for server in known_servers:
+        try:
+            channel = grpc.insecure_channel(server)
+            stub = crash_pb2_grpc.CrashReplicatorStub(channel)
             
-    except Exception as e:
-        logger.error(f"Error connecting to initial server: {e}")
-        logger.warning(f"Falling back to initial server {initial_server}")
-        return initial_server, [initial_server]
+            # Call the GetLeader RPC
+            response = stub.GetLeader(crash_pb2.LeaderRequest())
+            
+            # Add this server and any discovered servers to our set
+            all_discovered_servers.add(server)
+            for endpoint in response.server_endpoints:
+                server_addr = f"{endpoint.address}:{endpoint.port}"
+                all_discovered_servers.add(server_addr)
+            
+            if response.is_leader:
+                logger.info(f"Server {server} is the leader")
+                leader_addr = server
+                break
+            elif response.leader_address:
+                leader_addr = f"{response.leader_address}:{response.leader_port}"
+                logger.info(f"Redirecting to leader at {leader_addr}")
+                break
+        except Exception as e:
+            logger.debug(f"Error connecting to server {server}: {e}")
+            continue
+    
+    if not leader_addr:
+        logger.warning(f"No leader found, using initial server {initial_server}")
+        leader_addr = initial_server
+    
+    return leader_addr, list(all_discovered_servers)
 
 
 def run(csv_file, initial_server="localhost:50056"):
@@ -157,12 +166,13 @@ def run(csv_file, initial_server="localhost:50056"):
     leader_address, known_servers = get_leader_address(initial_server)
     
     sent = 0
-    max_retries = 3
+    max_retries = 10
     retry_count = 0
     
     while retry_count < max_retries:
         try:
             # Connect to the leader
+            leader_address, known_servers = get_leader_address(initial_server, known_servers=known_servers)
             channel = grpc.insecure_channel(leader_address)
             stub = crash_pb2_grpc.CrashReplicatorStub(channel)
             
@@ -209,7 +219,14 @@ def run(csv_file, initial_server="localhost:50056"):
                 break  # Success, exit the retry loop
             else:
                 logger.error(f"Server reported failure: {ack.message}")
-                retry_count += 1
+                # Check if the error message contains leader information
+                if "Try " in ack.message:
+                    new_leader = ack.message.split("Try ")[1].strip()
+                    logger.info(f"Redirecting to new leader at {new_leader}")
+                    leader_address = new_leader
+                    retry_count -= 1  # Don't count this as a retry
+                else:
+                    retry_count += 1
                 
         except grpc.RpcError as e:
             if e.code() == grpc.StatusCode.UNAVAILABLE:

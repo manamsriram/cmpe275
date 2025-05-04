@@ -387,24 +387,13 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         is_leader = self.state == "leader"
         leader_id = self.leader_id if not is_leader else self.node_id
         
-        # Create a list of known server endpoints from our adjacency list
+        # Create a list of ALL known server endpoints from our nodes list
         server_endpoints = []
-        for node_id in self.adj.get(self.node_id, []):
-            node = next((n for n in self.nodes if n["id"] == node_id), None)
-            if node:
-                server_endpoints.append(crash_pb2.ServerEndpoint(
-                    server_id=node["id"],
-                    address=node["address"],
-                    port=node["port"]
-                ))
-        
-        # Add ourselves to the endpoints
-        my_node = next((n for n in self.nodes if n["id"] == self.node_id), None)
-        if my_node:
+        for node in self.nodes:
             server_endpoints.append(crash_pb2.ServerEndpoint(
-                server_id=self.node_id,
-                address=my_node["address"],
-                port=my_node["port"]
+                server_id=node["id"],
+                address=node["address"],
+                port=node["port"]
             ))
         
         # Find the leader's address and port
@@ -423,6 +412,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             leader_port=leader_port,
             server_endpoints=server_endpoints
         )
+
 
     def send_heartbeat(self):
         if self.state != "leader":
@@ -638,8 +628,12 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                 paths_meta = json.dumps(paths)
                 pos = 0
             else:
-                paths = json.loads(paths_meta)
-                pos = pos_meta
+                try:
+                    paths = json.loads(paths_meta) if paths_meta else {}
+                    pos = pos_meta
+                except json.JSONDecodeError:
+                    print(f"[{self.node_id}] Invalid JSON in paths_meta: {paths_meta}")
+                    paths = {}
 
             # Route or store
             for tid, pth in paths.items():
@@ -876,6 +870,78 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             if hasattr(self, "cached_targets"):
                 del self.cached_targets
 
+    def detect_and_repair_network_partition(self):
+        """
+        Detect if the network is partitioned and attempt to repair it
+        by establishing new connections between disconnected segments.
+        """
+        print(f"[{self.node_id}] Checking for network partitions...")
+        
+        # Build a graph of reachable nodes
+        reachable = set([self.node_id])
+        queue = [self.node_id]
+        
+        while queue:
+            current = queue.pop(0)
+            for nbr_id in self.adj.get(current, []):
+                if nbr_id in reachable:
+                    continue
+                    
+                # Check if we can reach this neighbor
+                can_reach = False
+                if current == self.node_id:
+                    try:
+                        self.stubs[nbr_id].GetLeader(crash_pb2.LeaderRequest(), timeout=1)
+                        can_reach = True
+                    except:
+                        pass
+                else:
+                    # Assume nodes in our reachable set can reach their neighbors
+                    can_reach = True
+                    
+                if can_reach:
+                    reachable.add(nbr_id)
+                    queue.append(nbr_id)
+        
+        # If we can't reach all nodes, we have a partition
+        if len(reachable) < len(self.nodes):
+            print(f"[{self.node_id}] Network partition detected! Reachable: {reachable}")
+            
+            # Find unreachable nodes
+            unreachable = set(n["id"] for n in self.nodes) - reachable
+            
+            # Try to establish new connections to bridge the partition
+            for r_id in reachable:
+                for u_id in unreachable:
+                    # Skip if already connected
+                    if u_id in self.adj.get(r_id, []):
+                        continue
+                        
+                    # Try to create a new connection
+                    r_node = next((n for n in self.nodes if n["id"] == r_id), None)
+                    u_node = next((n for n in self.nodes if n["id"] == u_id), None)
+                    
+                    if r_node and u_node:
+                        print(f"[{self.node_id}] Attempting to bridge partition by connecting {r_id} to {u_id}")
+                        
+                        # Update adjacency lists
+                        self.adj.setdefault(r_id, []).append(u_id)
+                        self.adj.setdefault(u_id, []).append(r_id)
+                        
+                        # If we're creating a connection for ourselves, establish the stub
+                        if r_id == self.node_id:
+                            addr = f"{u_node['address']}:{u_node['port']}"
+                            channel = grpc.insecure_channel(addr)
+                            self.stubs[u_id] = crash_pb2_grpc.CrashReplicatorStub(channel)
+                            
+                        # Clear path cache to force recalculation of routes
+                        self.path_cache = {}
+                        return True
+            
+            return False
+        return True
+
+
     def monitor_node_health(self):
         """
         Periodically check if all nodes are reachable.
@@ -901,6 +967,10 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                     print(f"[{self.node_id}] Node {nid} appears to be down: {e}")
                     # Update topology to handle the node failure
                     self.update_topology(removed_node=nid)
+                    # Re-replicate data from the failed node
+                    # self.handle_node_failure(nid)
+            self.detect_and_repair_network_partition()
+
 
     def RegisterNode(self, request, context):
         """
