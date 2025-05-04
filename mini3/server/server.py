@@ -9,6 +9,7 @@ import threading
 from collections import deque
 from concurrent import futures
 from proto import crash_pb2, crash_pb2_grpc
+import psutil
 
 
 def load_configs(config_path):
@@ -83,6 +84,11 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         self.election_timeout = random.uniform(300, 600) / 1000  # 300-600ms
         self.heartbeat_interval = 50 / 1000  # 50ms
 
+        self.last_score_time = time.time()
+        self.score_time_interval = 10  # Calculate every 10 seconds
+        self.rows_since_last_score = 0
+        self.score_row_threshold = 10000  # Calculate every 10,000 rows
+
         t = threading.Thread(target=self._log_store_count, daemon=True)
         t.start()
 
@@ -116,6 +122,97 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             print(
                 f"[{self.node_id}] Stored records count: {count}, storage used: {size_bytes} bytes ({size_mb:.2f} MB)"
             )
+
+    def calculate_server_score(self):
+        # Get system load average (1, 5, 15 minute averages)
+        try:
+            load_avg = os.getloadavg()[0]  # Use 1-minute average
+        except AttributeError:
+            load_avg = 0  # Default for Windows which doesn't have getloadavg
+
+        # Get current I/O wait percentage - handle platform differences
+        cpu_times = psutil.cpu_times_percent()
+        io_wait = getattr(cpu_times, "iowait", 0)  # Default to 0 if not available
+
+        # Rest of your code remains the same
+        net_io = psutil.net_io_counters()
+        net_usage = (net_io.bytes_sent + net_io.bytes_recv) / (1024 * 1024)
+        memory_stored = self.store_size / (1024 * 1024)
+
+        score = (
+            (0.3 * min(100, load_avg * 10))
+            + (0.3 * io_wait)
+            + (0.2 * min(100, net_usage))
+            + (0.2 * min(100, memory_stored))
+        )
+
+        return {
+            "server_id": self.node_id,
+            "score": score,
+            "load_avg": load_avg,
+            "io_wait": io_wait,
+            "net_usage_mb": net_usage,
+            "memory_stored_mb": memory_stored,
+        }
+
+    def PropagateResourceScore(self, request, context):
+        """Propagate resource score request through the network"""
+        # Track visited nodes to prevent cycles
+        visited_nodes = list(request.visited_nodes)
+
+        # If we've already seen this request, don't process it again
+        if self.node_id in visited_nodes:
+            return crash_pb2.ResourceScoreResponse()
+
+        # Add ourselves to visited nodes
+        visited_nodes.append(self.node_id)
+
+        # Calculate our own score
+        my_score = self.calculate_server_score()
+
+        # Create a ResourceScore object for our score
+        resource_score = crash_pb2.ResourceScore(
+            server_id=my_score["server_id"],
+            score=my_score["score"],
+            load_avg=my_score["load_avg"],
+            io_wait=my_score["io_wait"],
+            net_usage_mb=my_score["net_usage_mb"],
+            memory_stored_mb=my_score["memory_stored_mb"],
+        )
+
+        # Initialize response with our score
+        collected_scores = [resource_score]
+
+        # Propagate to neighbors
+        for nbr_id in self.adj.get(self.node_id, []):
+            if nbr_id not in visited_nodes:
+                try:
+                    # Create propagation request
+                    prop_request = crash_pb2.ResourceScoreRequest(
+                        original_requester=request.original_requester,
+                        visited_nodes=visited_nodes,
+                    )
+
+                    # Forward to neighbor
+                    response = self.stubs[nbr_id].PropagateResourceScore(prop_request)
+
+                    # Add neighbor's collected scores to our collection
+                    collected_scores.extend(response.collected_scores)
+                except Exception as e:
+                    print(
+                        f"[{self.node_id}] Error propagating score request to {nbr_id}: {e}"
+                    )
+
+        # Return all collected scores
+        return crash_pb2.ResourceScoreResponse(
+            server_id=self.node_id,
+            score=my_score["score"],
+            load_avg=my_score["load_avg"],
+            io_wait=my_score["io_wait"],
+            net_usage_mb=my_score["net_usage_mb"],
+            memory_stored_mb=my_score["memory_stored_mb"],
+            collected_scores=collected_scores,
+        )
 
     def reset_election_timer(self):
         if self.election_timer:
@@ -443,11 +540,57 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             self.seen_ids.add(rid)
             self.vector_clocks.setdefault(rid, {})[self.node_id] = incoming_vc
 
+            self.rows_since_last_score += 1
+
             raw = record.SerializeToString()
 
             if self.is_leader:
-                # ── Leader initial routing ───────────────────────────
-                targets = random.sample([n["id"] for n in self.nodes], 2)
+                # Check if we need to recalculate scores
+                current_time = time.time()
+                time_elapsed = current_time - self.last_score_time
+                recalculate = (
+                    time_elapsed >= self.score_time_interval
+                    or self.rows_since_last_score >= self.score_row_threshold
+                )
+
+                if recalculate:
+                    try:
+                        # Reset counters
+                        self.last_score_time = current_time
+                        self.rows_since_last_score = 0
+
+                        # Create initial request with ourselves as original requester
+                        request = crash_pb2.ResourceScoreRequest(
+                            original_requester=self.node_id, visited_nodes=[]
+                        )
+
+                        # Start propagation from ourselves
+                        response = self.PropagateResourceScore(request, context)
+
+                        # Sort collected scores (lower is better)
+                        sorted_scores = sorted(
+                            response.collected_scores, key=lambda x: x.score
+                        )
+
+                        # Choose the 2 best server IDs
+                        best_servers = [
+                            s.server_id
+                            for s in sorted_scores[: min(2, len(sorted_scores))]
+                        ]
+
+                        self.cached_targets = best_servers
+
+                    except Exception as e:
+                        print(f"[{self.node_id}] Error collecting resource scores: {e}")
+                        # Fall back to random selection
+                        self.cached_targets = random.sample(self.nodes, 2)
+
+                # Use cached_targets (list of IDs), or fall back to two random IDs
+                if hasattr(self, "cached_targets"):
+                    targets = self.cached_targets
+                else:
+                    targets = random.sample([n["id"] for n in self.nodes], 2)
+
                 node_set = ",".join(targets)
                 vector_clock = 0  # resets for downstream
 
@@ -549,9 +692,9 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             if rid in self.local_records:
                 return crash_pb2.QueryResponse(record=self.local_records[rid])
             if pos < len(path) - 1:
-                return self.stubs[path[pos+1]].QueryRow(
+                return self.stubs[path[pos + 1]].QueryRow(
                     request,
-                    metadata=[("query_path", path_json), ("query_pos", str(pos+1))]
+                    metadata=[("query_path", path_json), ("query_pos", str(pos + 1))],
                 )
             context.set_code(grpc.StatusCode.NOT_FOUND)
             return crash_pb2.QueryResponse()
@@ -582,7 +725,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             try:
                 resp = self.stubs[path[1]].QueryRow(
                     request,
-                    metadata=[("query_path", json.dumps(path)), ("query_pos", "1")]
+                    metadata=[("query_path", json.dumps(path)), ("query_pos", "1")],
                 )
                 successes.append((nid, resp.record))
             except grpc.RpcError:
