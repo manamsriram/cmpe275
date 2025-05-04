@@ -99,10 +99,17 @@ message LeaderRequest {
   // Empty request
 }
 
+message ServerEndpoint {
+  string server_id = 1;
+  string address = 2;
+  int32 port = 3;
+}
+
 message LeaderResponse {
   bool is_leader = 1;
   string leader_address = 2;
   int32 leader_port = 3;
+  repeated ServerEndpoint server_endpoints = 4;
 }
 
 message QueryRequest {
@@ -111,6 +118,42 @@ message QueryRequest {
 
 message QueryResponse {
   CrashRecord record = 1;
+}
+
+// New messages for node registration and topology management
+message RegisterNodeRequest {
+  string node_id = 1;
+  string address = 2;
+  int32 port = 3;
+}
+
+message RegisterNodeResponse {
+  bool success = 1;
+  string current_leader = 2;
+  repeated string nodes = 3;
+}
+
+message TopologyUpdateRequest {
+  string update_type = 1;  // "add" or "remove"
+  string node_id = 2;
+  string address = 3;
+  int32 port = 4;
+}
+
+message TopologyUpdateResponse {
+  bool success = 1;
+}
+
+message NodeInfo {
+  string node_id = 1;
+  string address = 2;
+  int32 port = 3;
+}
+
+message GetAllNodesRequest {}
+
+message GetAllNodesResponse {
+  repeated NodeInfo nodes = 1;
 }
 
 // Service for streaming crash records
@@ -131,4 +174,8 @@ service CrashReplicator {
 
   rpc PropagateResourceScore(ResourceScoreRequest) returns (ResourceScoreResponse);
 
+  // New methods for network resilience
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+  rpc UpdateTopology(TopologyUpdateRequest) returns (TopologyUpdateResponse);
+  rpc GetAllNodes(GetAllNodesRequest) returns (GetAllNodesResponse);
 }

@@ -70,6 +70,21 @@ class CrashReplicatorStub(object):
                 request_serializer=proto_dot_crash__pb2.ResourceScoreRequest.SerializeToString,
                 response_deserializer=proto_dot_crash__pb2.ResourceScoreResponse.FromString,
                 _registered_method=True)
+        self.RegisterNode = channel.unary_unary(
+                '/crashreplication.CrashReplicator/RegisterNode',
+                request_serializer=proto_dot_crash__pb2.RegisterNodeRequest.SerializeToString,
+                response_deserializer=proto_dot_crash__pb2.RegisterNodeResponse.FromString,
+                _registered_method=True)
+        self.UpdateTopology = channel.unary_unary(
+                '/crashreplication.CrashReplicator/UpdateTopology',
+                request_serializer=proto_dot_crash__pb2.TopologyUpdateRequest.SerializeToString,
+                response_deserializer=proto_dot_crash__pb2.TopologyUpdateResponse.FromString,
+                _registered_method=True)
+        self.GetAllNodes = channel.unary_unary(
+                '/crashreplication.CrashReplicator/GetAllNodes',
+                request_serializer=proto_dot_crash__pb2.GetAllNodesRequest.SerializeToString,
+                response_deserializer=proto_dot_crash__pb2.GetAllNodesResponse.FromString,
+                _registered_method=True)
 
 
 class CrashReplicatorServicer(object):
@@ -121,6 +136,25 @@ class CrashReplicatorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def RegisterNode(self, request, context):
+        """New methods for network resilience
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UpdateTopology(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetAllNodes(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_CrashReplicatorServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -158,6 +192,21 @@ def add_CrashReplicatorServicer_to_server(servicer, server):
                     servicer.PropagateResourceScore,
                     request_deserializer=proto_dot_crash__pb2.ResourceScoreRequest.FromString,
                     response_serializer=proto_dot_crash__pb2.ResourceScoreResponse.SerializeToString,
+            ),
+            'RegisterNode': grpc.unary_unary_rpc_method_handler(
+                    servicer.RegisterNode,
+                    request_deserializer=proto_dot_crash__pb2.RegisterNodeRequest.FromString,
+                    response_serializer=proto_dot_crash__pb2.RegisterNodeResponse.SerializeToString,
+            ),
+            'UpdateTopology': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateTopology,
+                    request_deserializer=proto_dot_crash__pb2.TopologyUpdateRequest.FromString,
+                    response_serializer=proto_dot_crash__pb2.TopologyUpdateResponse.SerializeToString,
+            ),
+            'GetAllNodes': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetAllNodes,
+                    request_deserializer=proto_dot_crash__pb2.GetAllNodesRequest.FromString,
+                    response_serializer=proto_dot_crash__pb2.GetAllNodesResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -350,6 +399,87 @@ class CrashReplicator(object):
             '/crashreplication.CrashReplicator/PropagateResourceScore',
             proto_dot_crash__pb2.ResourceScoreRequest.SerializeToString,
             proto_dot_crash__pb2.ResourceScoreResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RegisterNode(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/crashreplication.CrashReplicator/RegisterNode',
+            proto_dot_crash__pb2.RegisterNodeRequest.SerializeToString,
+            proto_dot_crash__pb2.RegisterNodeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateTopology(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/crashreplication.CrashReplicator/UpdateTopology',
+            proto_dot_crash__pb2.TopologyUpdateRequest.SerializeToString,
+            proto_dot_crash__pb2.TopologyUpdateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetAllNodes(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/crashreplication.CrashReplicator/GetAllNodes',
+            proto_dot_crash__pb2.GetAllNodesRequest.SerializeToString,
+            proto_dot_crash__pb2.GetAllNodesResponse.FromString,
             options,
             channel_credentials,
             insecure,

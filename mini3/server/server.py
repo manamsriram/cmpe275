@@ -89,6 +89,10 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         self.rows_since_last_score = 0
         self.score_row_threshold = 10000  # Calculate every 10,000 rows
 
+        # Start health monitoring thread
+        health_thread = threading.Thread(target=self.monitor_node_health, daemon=True)
+        health_thread.start()
+
         t = threading.Thread(target=self._log_store_count, daemon=True)
         t.start()
 
@@ -370,7 +374,10 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         self.is_leader = True
         self.leader_id = self.node_id
         print(f"[{self.node_id}] Became leader for term {self.current_term}")
-
+        
+        # Clear path cache when becoming leader
+        self.path_cache = {}
+        
         # Cancel election timer and start sending heartbeats
         if self.election_timer:
             self.election_timer.cancel()
@@ -379,21 +386,42 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
     def GetLeader(self, request, context):
         is_leader = self.state == "leader"
         leader_id = self.leader_id if not is_leader else self.node_id
-
-        # If we know who the leader is
+        
+        # Create a list of known server endpoints from our adjacency list
+        server_endpoints = []
+        for node_id in self.adj.get(self.node_id, []):
+            node = next((n for n in self.nodes if n["id"] == node_id), None)
+            if node:
+                server_endpoints.append(crash_pb2.ServerEndpoint(
+                    server_id=node["id"],
+                    address=node["address"],
+                    port=node["port"]
+                ))
+        
+        # Add ourselves to the endpoints
+        my_node = next((n for n in self.nodes if n["id"] == self.node_id), None)
+        if my_node:
+            server_endpoints.append(crash_pb2.ServerEndpoint(
+                server_id=self.node_id,
+                address=my_node["address"],
+                port=my_node["port"]
+            ))
+        
+        # Find the leader's address and port
+        leader_address = ""
+        leader_port = 0
         if leader_id:
-            # Find the leader's address and port
             for node in self.nodes:
                 if node["id"] == leader_id:
-                    return crash_pb2.LeaderResponse(
-                        is_leader=is_leader,
-                        leader_address=node["address"],
-                        leader_port=node["port"],
-                    )
-
-        # If we don't know who the leader is
+                    leader_address = node["address"]
+                    leader_port = node["port"]
+                    break
+        
         return crash_pb2.LeaderResponse(
-            is_leader=is_leader, leader_address="", leader_port=0
+            is_leader=is_leader,
+            leader_address=leader_address,
+            leader_port=leader_port,
+            server_endpoints=server_endpoints
         )
 
     def send_heartbeat(self):
@@ -800,6 +828,151 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         ack = stub.SendCrashes(one(), metadata=meta)
         if not ack.success:
             raise RuntimeError(f"replication to {nid} failed: {ack.message}")
+        
+    def update_topology(self, new_node=None, removed_node=None):
+        """
+        Update the network topology when a node joins or leaves.
+        Clears path cache and triggers a new leader election if needed.
+        """
+        if new_node:
+            # Add the new node to our list if not already present
+            if new_node["id"] not in [n["id"] for n in self.nodes]:
+                self.nodes.append(new_node)
+                print(f"[{self.node_id}] Added new node {new_node['id']} to topology")
+                
+            # Update adjacency list if this node is a peer
+            if new_node["id"] in self.adj.get(self.node_id, []):
+                # Create stub for the new peer
+                addr = f"{new_node['address']}:{new_node['port']}"
+                channel = grpc.insecure_channel(addr)
+                self.stubs[new_node["id"]] = crash_pb2_grpc.CrashReplicatorStub(channel)
+                print(f"[{self.node_id}] Created connection to new peer {new_node['id']}")
+        
+        if removed_node:
+            # Remove the node from our list
+            self.nodes = [n for n in self.nodes if n["id"] != removed_node]
+            
+            # Update adjacency list
+            if removed_node in self.adj.get(self.node_id, []):
+                self.adj[self.node_id].remove(removed_node)
+                # Close connection if it exists
+                if removed_node in self.stubs:
+                    del self.stubs[removed_node]
+                    print(f"[{self.node_id}] Removed connection to peer {removed_node}")
+        
+        # Clear path cache since topology changed
+        self.path_cache = {}
+        
+        # If the leader was removed, trigger a new election
+        if removed_node and removed_node == self.leader_id:
+            print(f"[{self.node_id}] Leader {removed_node} is down, starting election")
+            self.leader_id = None
+            self.start_election()
+        
+        # If we're the leader, recalculate paths
+        if self.is_leader:
+            print(f"[{self.node_id}] Topology changed, recalculating paths as leader")
+            # Clear cached targets to force recalculation
+            if hasattr(self, "cached_targets"):
+                del self.cached_targets
+
+    def monitor_node_health(self):
+        """
+        Periodically check if all nodes are reachable.
+        Triggers topology update if a node is unreachable.
+        """
+        while True:
+            time.sleep(5)  # Check every 5 seconds
+            
+            for node in self.nodes:
+                nid = node["id"]
+                if nid == self.node_id:
+                    continue
+                    
+                # Skip if not a direct peer
+                if nid not in self.adj.get(self.node_id, []):
+                    continue
+                    
+                try:
+                    # Try to get leader info as a simple health check
+                    request = crash_pb2.LeaderRequest()
+                    self.stubs[nid].GetLeader(request, timeout=2)
+                except Exception as e:
+                    print(f"[{self.node_id}] Node {nid} appears to be down: {e}")
+                    # Update topology to handle the node failure
+                    self.update_topology(removed_node=nid)
+
+    def RegisterNode(self, request, context):
+        """
+        Allow new nodes to register with the network.
+        """
+        new_node = {
+            "id": request.node_id,
+            "address": request.address,
+            "port": request.port
+        }
+        
+        # Update our topology with the new node
+        self.update_topology(new_node=new_node)
+        
+        # If we're the leader, broadcast the updated topology
+        if self.is_leader:
+            self.broadcast_topology_update(new_node=new_node)
+        
+        return crash_pb2.RegisterNodeResponse(
+            success=True,
+            current_leader=self.leader_id or "",
+            nodes=[n["id"] for n in self.nodes]
+        )
+
+    def GetAllNodes(self, request, context):
+        """
+        Return information about all nodes in the network.
+        Used by clients when leader changes.
+        """
+        node_infos = []
+        for node in self.nodes:
+            node_infos.append(crash_pb2.NodeInfo(
+                node_id=node["id"],
+                address=node["address"],
+                port=node["port"]
+            ))
+        
+        return crash_pb2.GetAllNodesResponse(nodes=node_infos)
+    
+    def broadcast_topology_update(self, new_node=None, removed_node=None):
+        """
+        Broadcast topology changes to all nodes.
+        """
+        for node in self.nodes:
+            nid = node["id"]
+            if nid == self.node_id:
+                continue
+                
+            try:
+                # Create stub if needed
+                if nid not in self.stubs:
+                    addr = f"{node['address']}:{node['port']}"
+                    channel = grpc.insecure_channel(addr)
+                    self.stubs[nid] = crash_pb2_grpc.CrashReplicatorStub(channel)
+                    
+                # Send topology update
+                if new_node:
+                    request = crash_pb2.TopologyUpdateRequest(
+                        update_type="add",
+                        node_id=new_node["id"],
+                        address=new_node["address"],
+                        port=new_node["port"]
+                    )
+                else:
+                    request = crash_pb2.TopologyUpdateRequest(
+                        update_type="remove",
+                        node_id=removed_node
+                    )
+                    
+                self.stubs[nid].UpdateTopology(request)
+            except Exception as e:
+                print(f"[{self.node_id}] Error sending topology update to {nid}: {e}")
 
 
 def serve(config_path):
