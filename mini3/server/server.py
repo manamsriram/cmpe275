@@ -929,10 +929,29 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                         self.adj.setdefault(u_id, []).append(r_id)
                         
                         # If we're creating a connection for ourselves, establish the stub
+                        # If we're creating a connection for ourselves, establish the stub
                         if r_id == self.node_id:
+                            # Create our stub to the unreachable node
                             addr = f"{u_node['address']}:{u_node['port']}"
                             channel = grpc.insecure_channel(addr)
                             self.stubs[u_id] = crash_pb2_grpc.CrashReplicatorStub(channel)
+                            
+                            # Now tell the unreachable node to create a stub back to us
+                            try:
+                                # Create a topology update request
+                                request = crash_pb2.TopologyUpdateRequest(
+                                    update_type="add",
+                                    node_id=self.node_id,
+                                    address=next((n["address"] for n in self.nodes if n["id"] == self.node_id), ""),
+                                    port=next((n["port"] for n in self.nodes if n["id"] == self.node_id), 0)
+                                )
+                                
+                                # Send the request to create a connection back to us
+                                self.stubs[u_id].UpdateTopology(request)
+                                print(f"[{self.node_id}] Notified {u_id} to create connection back to us")
+                            except Exception as e:
+                                print(f"[{self.node_id}] Failed to notify {u_id} to create connection: {e}")
+
                             
                         # Clear path cache to force recalculation of routes
                         self.path_cache = {}
@@ -1010,6 +1029,24 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         
         return crash_pb2.GetAllNodesResponse(nodes=node_infos)
     
+    def UpdateTopology(self, request, context):
+        if request.update_type == "add":
+            # Create a stub to the node that sent the request
+            addr = f"{request.address}:{request.port}"
+            channel = grpc.insecure_channel(addr)
+            self.stubs[request.node_id] = crash_pb2_grpc.CrashReplicatorStub(channel)
+            
+            # Update adjacency list
+            if request.node_id not in self.adj.get(self.node_id, []):
+                self.adj.setdefault(self.node_id, []).append(request.node_id)
+            
+            print(f"[{self.node_id}] Created connection to {request.node_id}")
+            
+            # Clear path cache
+            self.path_cache = {}
+            
+        return crash_pb2.TopologyUpdateResponse(success=True)
+
     def broadcast_topology_update(self, new_node=None, removed_node=None):
         """
         Broadcast topology changes to all nodes.
