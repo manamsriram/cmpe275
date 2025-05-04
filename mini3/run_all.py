@@ -50,7 +50,7 @@ def main():
             subprocess.Popen(cmd, creationflags=flags)
         elif system == "Darwin":
             # macOS: open new Terminal window with cd command first
-            script = f'tell application "Terminal" to do script "cd Documents/GitHub/cmpe275/mini3 && {python_exec} -m server.server {cfg}"'
+            script = f'tell application "Terminal" to do script "cd Documents/vsProjects/cmpe275/mini3 && {python_exec} -m server.server {cfg}"'
             subprocess.Popen(["osascript", "-e", script])
         else:
             # Linux: try gnome-terminal, fall back to xterm

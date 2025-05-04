@@ -63,6 +63,13 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         self.peers = peers
         self.path_cache = {}
 
+        # vector_clocks[row_id] = { node_id: clock, … }
+        self.vector_clocks = {}
+        # node_sets[row_id] = set(node_ids holding that row)
+        self.node_sets = {}
+        # each follower’s local copy for answering queries
+        self.local_records = {}
+
         # Raft state
         self.current_term = 0
         self.voted_for = None
@@ -90,7 +97,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         # in-memory bounded store
         self.store = deque()
         self.store_size = 0
-        self.max_store_bytes = 150 * 1024 * 1024  # 150MB limit
+        self.max_store_bytes = 200 * 1024 * 1024  # 200MB limit
 
         self.path_cache = {}
 
@@ -118,9 +125,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         self.election_timer = threading.Timer(timeout, self.start_election)
         self.election_timer.daemon = True
         self.election_timer.start()
-        print(
-            f"[{self.node_id}] Reset election timer, will timeout in {timeout:.3f}s"
-        )
+        # print(f"[{self.node_id}] Reset election timer, will timeout in {timeout:.3f}s")
 
     def reset_heartbeat_timer(self):
         if self.heartbeat_timer:
@@ -190,9 +195,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
 
         # If the candidate's term is less than ours, reject
         if request.term < self.current_term:
-            return crash_pb2.VoteResponse(
-                term=self.current_term, vote_granted=False
-            )
+            return crash_pb2.VoteResponse(term=self.current_term, vote_granted=False)
 
         # If the candidate's term is greater than ours, update our term
         if request.term > self.current_term:
@@ -222,7 +225,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         for nbr_id in self.adj.get(self.node_id, []):
             if nbr_id not in seen_list:
                 try:
-                    print(f"[{self.node_id}] Forwarding vote request to {nbr_id}")
+                    # print(f"[{self.node_id}] Forwarding vote request to {nbr_id}")
                     self.stubs[nbr_id].RequestVote(
                         request, metadata=[("seen_nodes", new_seen)]
                     )
@@ -260,9 +263,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                     f"[{self.node_id}] Error sending vote to original candidate {original_candidate}: {e}"
                 )
 
-        return crash_pb2.VoteResponse(
-            term=self.current_term, vote_granted=vote_granted
-        )
+        return crash_pb2.VoteResponse(term=self.current_term, vote_granted=vote_granted)
 
     def become_leader(self):
         if self.state != "candidate":
@@ -304,7 +305,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
 
         term = self.current_term
 
-        print(f"[{self.node_id}] Sending heartbeats for term {term}")
+        # print(f"[{self.node_id}] Sending heartbeats for term {term}")
 
         for nbr_id in self.adj.get(self.node_id, []):
             try:
@@ -315,7 +316,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                 # Initialize seen_nodes with just the leader
                 seen_nodes = self.node_id
 
-                print(f"[{self.node_id}] Sending heartbeat to {nbr_id}")
+                # print(f"[{self.node_id}] Sending heartbeat to {nbr_id}")
                 response = self.stubs[nbr_id].AppendEntries(
                     request, metadata=[("seen_nodes", seen_nodes)]
                 )
@@ -354,9 +355,9 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             self.is_leader = False
             self.leader_id = request.leader_id
 
-        print(
-            f"[{self.node_id}] Received heartbeat from {request.leader_id} for term {request.term}"
-        )
+        # print(
+        #     f"[{self.node_id}] Received heartbeat from {request.leader_id} for term {request.term}"
+        # )
 
         # Forward heartbeat to neighbors who haven't seen it yet
         seen_list.append(self.node_id)
@@ -365,7 +366,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         for nbr_id in self.adj.get(self.node_id, []):
             if nbr_id not in seen_list:
                 try:
-                    print(f"[{self.node_id}] Forwarding heartbeat to {nbr_id}")
+                    # print(f"[{self.node_id}] Forwarding heartbeat to {nbr_id}")
                     self.stubs[nbr_id].AppendEntries(
                         request, metadata=[("seen_nodes", new_seen)]
                     )
@@ -411,85 +412,105 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             self.store_size -= len(old)
 
     def SendCrashes(self, request_iterator, context):
-        # capture incoming metadata for this RPC
+        """
+        Client‐streaming RPC. Now accepts updates for the same row_id
+        if the incoming vector_clock is larger than previously seen.
+        """
         meta = dict(context.invocation_metadata())
-        count = 0
+        processed = 0
+
+        # Parse headers for follower‐side routing
+        if not self.is_leader:
+            vector_clock = int(meta.get("vector_clock", "0"))
+            node_set = meta.get("node_set", "")
+            paths_meta = meta.get("paths") or ""
+            pos_meta = int(meta.get("pos", "0"))
 
         for record in request_iterator:
-            count += 1
+            processed += 1
             rid = record.row_id
-            # skip duplicates
-            if rid in self.seen_ids:
-                continue
-            self.seen_ids.add(rid)
 
-            # serialize once for store/forward
+            # Determine incoming clock
+            incoming_vc = vector_clock if not self.is_leader else 0
+            # Get this node’s previously stored clock for rid
+            prev_vc = self.vector_clocks.get(rid, {}).get(self.node_id, -1)
+
+            # Skip if we've already stored a version as new or newer
+            if rid in self.seen_ids and incoming_vc <= prev_vc:
+                continue
+
+            # Mark seen and update this node’s clock
+            self.seen_ids.add(rid)
+            self.vector_clocks.setdefault(rid, {})[self.node_id] = incoming_vc
+
             raw = record.SerializeToString()
 
-            # determine per-record paths & position
             if self.is_leader:
-                # choose two targets (including self) for replication
-                targets = random.sample(self.nodes, 2)
+                # ── Leader initial routing ───────────────────────────
+                targets = random.sample([n["id"] for n in self.nodes], 2)
+                node_set = ",".join(targets)
+                vector_clock = 0  # resets for downstream
+
+                # record intended replicas
+                self.node_sets[rid] = set(targets)
+
+                # build paths
                 paths = {}
-                for t in targets:
-                    key = (self.node_id, t["id"])
-                    # use cached path if available
-                    if key in self.path_cache:
-                        pth = self.path_cache[key]
-                    else:
-                        pth = find_path(self.adj, self.node_id, t["id"])
-                        if pth:
-                            self.path_cache[key] = pth
+                for tid in targets:
+                    key = (self.node_id, tid)
+                    pth = self.path_cache.get(key) or find_path(
+                        self.adj, self.node_id, tid
+                    )
                     if pth:
-                        paths[t["id"]] = pth
+                        self.path_cache[key] = pth
+                        paths[tid] = pth
+                paths_meta = json.dumps(paths)
                 pos = 0
             else:
-                # read precomputed paths & position
-                paths_json = meta.get("paths")
-                if not paths_json:
-                    return crash_pb2.Ack(success=False, message="Missing path metadata")
-                paths = json.loads(paths_json)
-                pos = int(meta.get("pos", "0"))
+                paths = json.loads(paths_meta)
+                pos = pos_meta
 
-            # for each target path, route record
+            # Route or store
             for tid, pth in paths.items():
-                # validate current position
-                if pos < 0 or pos >= len(pth):
+                if pos < 0 or pos >= len(pth) or pth[pos] != self.node_id:
                     continue
-                # only act when this node is the current hop
-                if pth[pos] != self.node_id:
-                    continue
-                # if final hop, store locally
+
+                # Final hop: store/overwrite locally
                 if pos == len(pth) - 1:
                     self._store(raw)
-                    # print(f"[{self.node_id}] Stored {rid} for target {tid}")
-                    continue
-                # forward to next hop
-                next_hop = pth[pos + 1]
-                stub = self.stubs.get(next_hop)
-                if not stub:
-                    continue
-                # prepare metadata for next
-                meta_out = [("paths", json.dumps(paths)), ("pos", str(pos + 1))]
+                    self.local_records[rid] = record
+                    # Ensure this node is in the set
+                    self.node_sets.setdefault(rid, set()).add(self.node_id)
+                    print(
+                        f"[{self.node_id}] stored/updated row {rid}, vc={incoming_vc}"
+                    )
 
-                def one():
-                    yield record
+                else:
+                    # Forward onward
+                    next_hop = pth[pos + 1]
+                    stub = self.stubs.get(next_hop)
+                    if not stub:
+                        continue
+                    meta_out = [
+                        ("paths", paths_meta),
+                        ("pos", str(pos + 1)),
+                        ("vector_clock", str(vector_clock)),
+                        ("node_set", node_set),
+                    ]
 
-                try:
-                    ack = stub.SendCrashes(one(), metadata=meta_out)
-                    if ack.success:
-                        print(
-                            f"[{self.node_id}] Forwarded {rid} to {next_hop} (target {tid}) - ACK received: {ack.message}"
-                        )
-                        pass
-                    else:
-                        print(
-                            f"[{self.node_id}] Forward to {next_hop} reported failure: {ack.message}"
-                        )
-                except Exception as e:
-                    print(f"[{self.node_id}] Error forwarding to {next_hop}: {e}")
+                    def one():
+                        yield record
 
-        return crash_pb2.Ack(success=True, message=f"Processed {count} records")
+                    try:
+                        ack = stub.SendCrashes(one(), metadata=meta_out)
+                        if not ack.success:
+                            print(
+                                f"[{self.node_id}] fwd to {next_hop} failed: {ack.message}"
+                            )
+                    except Exception as e:
+                        print(f"[{self.node_id}] Error forwarding to {next_hop}: {e}")
+
+        return crash_pb2.Ack(success=True, message=f"Processed {processed} records")
 
     def HeartbeatAck(self, request, context):
         if self.state != "leader":
@@ -503,6 +524,139 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         # This is useful for monitoring cluster health
 
         return crash_pb2.HeartbeatAckResponse(received=True)
+
+    def QueryRow(self, request, context):
+        """
+        Unary RPC to fetch a single row by row_id via routed forwarding.
+        Leader:
+          - broadcast routed QueryRow to every node
+          - collect successes
+          - if successes < RF, repair missing replicas
+          - if successes == 0, return NOT_FOUND
+          - return freshest record
+        Followers:
+          - if local, reply
+          - else forward to leader
+        """
+        rid = request.row_id
+        meta = dict(context.invocation_metadata())
+        path_json = meta.get("query_path")
+
+        # 1) Routed hop-by-hop
+        if path_json is not None:
+            path = json.loads(path_json)
+            pos = int(meta.get("query_pos", "0"))
+            if rid in self.local_records:
+                return crash_pb2.QueryResponse(record=self.local_records[rid])
+            if pos < len(path) - 1:
+                return self.stubs[path[pos+1]].QueryRow(
+                    request,
+                    metadata=[("query_path", path_json), ("query_pos", str(pos+1))]
+                )
+            context.set_code(grpc.StatusCode.NOT_FOUND)
+            return crash_pb2.QueryResponse()
+
+        # 2) Non-leader forwards to leader
+        if not self.is_leader:
+            if not self.leader_id:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                return crash_pb2.QueryResponse()
+            leader = next(n for n in self.nodes if n["id"] == self.leader_id)
+            stub = crash_pb2_grpc.CrashReplicatorStub(
+                grpc.insecure_channel(f"{leader['address']}:{leader['port']}")
+            )
+            return stub.QueryRow(request)
+
+        # 3) Leader entrypoint: gather successes
+        successes = []
+        if rid in self.local_records:
+            successes.append((self.node_id, self.local_records[rid]))
+
+        for node in self.nodes:
+            nid = node["id"]
+            if nid == self.node_id:
+                continue
+            path = find_path(self.adj, self.node_id, nid)
+            if not path or len(path) < 2:
+                continue
+            try:
+                resp = self.stubs[path[1]].QueryRow(
+                    request,
+                    metadata=[("query_path", json.dumps(path)), ("query_pos", "1")]
+                )
+                successes.append((nid, resp.record))
+            except grpc.RpcError:
+                continue
+
+        RF = 2
+
+        # 4) If no successes, return NOT_FOUND
+        if not successes:
+            context.set_code(grpc.StatusCode.NOT_FOUND)
+            context.set_details(f"row_id {rid} not found on any node")
+            return crash_pb2.QueryResponse()
+
+        # 5) Repair if fewer than RF successes
+        if len(successes) < RF:
+            best_node, best_rec = successes[0]
+            orig = self.node_sets.get(rid, {n["id"] for n in self.nodes})
+            got_ids = {nid for nid, _ in successes}
+            missing = orig - got_ids
+
+            # re-replicate missing originals
+            for m in missing:
+                try:
+                    self._replicate_to(m, best_rec)
+                    got_ids.add(m)
+                except:
+                    # or pick a fresh node
+                    candidates = [n["id"] for n in self.nodes if n["id"] not in got_ids]
+                    if not candidates:
+                        continue
+                    new = random.choice(candidates)
+                    try:
+                        self._replicate_to(new, best_rec)
+                        orig.discard(m)
+                        orig.add(new)
+                        self.node_sets[rid] = orig
+                        got_ids.add(new)
+                    except:
+                        pass
+
+            # overwrite one live replica to ensure freshness
+            try:
+                self._replicate_to(best_node, best_rec)
+            except:
+                pass
+
+        # 6) Pick freshest and return
+        best_node, best_rec = successes[0]
+        return crash_pb2.QueryResponse(record=best_rec)
+
+    # helper to replicate a single record to node `nid`
+    def _replicate_to(self, nid, record):
+        """
+        Sends a one-off SendCrashes with the given record to node `nid`.
+        Raises on RPC error.
+        """
+        # build a trivial path [leader -> nid]
+        path = find_path(self.adj, self.node_id, nid)
+        if not path or len(path) < 2:
+            raise RuntimeError(f"No route to {nid}")
+        stub = self.stubs[path[1]]
+        meta = [
+            ("paths", json.dumps({nid: path})),
+            ("pos", "0"),
+            # optionally carry forward vector_clock and node_set...
+        ]
+
+        # use a generator to wrap the single record
+        def one():
+            yield record
+
+        ack = stub.SendCrashes(one(), metadata=meta)
+        if not ack.success:
+            raise RuntimeError(f"replication to {nid} failed: {ack.message}")
 
 
 def serve(config_path):

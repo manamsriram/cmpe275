@@ -5,6 +5,8 @@ import argparse
 import csv
 import logging
 import grpc
+import random
+import time
 
 from proto import crash_pb2, crash_pb2_grpc
 
@@ -36,7 +38,6 @@ def load_crash_records(csv_path):
         reader = csv.DictReader(f)
         for idx, row in enumerate(reader, start=1):
             try:
-                # Bad but can't see another way of doing this
                 safe = lambda k: (row.get(k) or "").strip()
                 crash_date = safe("CRASH DATE")
                 crash_time = safe("CRASH TIME")
@@ -44,18 +45,15 @@ def load_crash_records(csv_path):
                 zip_code_s = safe("ZIP CODE")
                 collision_id_s = safe("COLLISION_ID")
 
-                # Should never enter because every row in the CSV has these columns
                 if not crash_date or not crash_time:
                     continue
-                
                 if not zip_code_s:
                     zip_code_s = "-1"
-                
                 if not borough:
                     borough = "UNDEFINED"
-                    
+
                 collision_id = int(collision_id_s) if collision_id_s else -1
-                
+
                 record = crash_pb2.CrashRecord(
                     row_id=idx,
                     crash_date=crash_date,
@@ -117,10 +115,8 @@ def get_leader_address(initial_server="localhost:50056"):
     try:
         channel = grpc.insecure_channel(initial_server)
         stub = crash_pb2_grpc.CrashReplicatorStub(channel)
-        
-        # Call the GetLeader RPC to find the current leader
+
         response = stub.GetLeader(crash_pb2.LeaderRequest())
-        
         if response.is_leader:
             logger.info(f"Initial server {initial_server} is the leader")
             return initial_server
@@ -131,7 +127,7 @@ def get_leader_address(initial_server="localhost:50056"):
         else:
             logger.warning(f"No leader found, using initial server {initial_server}")
             return initial_server
-            
+
     except Exception as e:
         logger.error(f"Error connecting to initial server: {e}")
         logger.warning(f"Falling back to initial server {initial_server}")
@@ -139,40 +135,68 @@ def get_leader_address(initial_server="localhost:50056"):
 
 
 def run(csv_file, initial_server="localhost:50056"):
-    # -2 because of new line at the end of the CSV and the header line
-    with open(csv_file, newline="", encoding="utf-8") as f:
-        total_rows = sum(1 for _ in f) - 2
+    MAX_ROWS = 50_000
 
-    # Get the leader address
+    # Count rows (minus header and final newline), then cap to MAX_ROWS
+    with open(csv_file, newline="", encoding="utf-8") as f:
+        raw_count = sum(1 for _ in f) - 2
+    total_rows = min(raw_count, MAX_ROWS)
+
     leader_address = get_leader_address(initial_server)
-    
+
     sent = 0
+
     def generator():
         nonlocal sent
         for rec in load_crash_records(csv_file):
+            if sent >= total_rows:
+                break
             sent += 1
             yield rec
 
-    # Connect to the leader
     channel = grpc.insecure_channel(leader_address)
     stub = crash_pb2_grpc.CrashReplicatorStub(channel)
 
-    logger.info(f"Streaming crash records from {csv_file} to {leader_address}...")
-    
+    logger.info(
+        f"Streaming up to {total_rows} crash records from {csv_file} to {leader_address}..."
+    )
     try:
         ack = stub.SendCrashes(generator())
-        
         skipped = total_rows - sent
-        logger.info(f"Total rows: {total_rows}, Sent: {sent}, Skipped: {skipped}")
+        logger.info(
+            f"Total rows intended: {total_rows}, Sent: {sent}, Skipped: {skipped}"
+        )
 
         if ack.success:
             logger.info(f"Server received: {ack.message}")
         else:
             logger.error(f"Server reported failure: {ack.message}")
-            
+
+        # Only query if we actually sent something
+        if sent > 0:
+            # Instead of random, iterate row_id 1000–2000 (within what we sent)
+            start_id = 1000
+            end_id = min(sent, 10000)
+            if end_id >= start_id:
+                for query_id in range(start_id, end_id + 1):
+                    logger.info(f"Querying row_id={query_id}…")
+                    try:
+                        resp = stub.QueryRow(crash_pb2.QueryRequest(row_id=query_id))
+                        rec = resp.record
+                        print(f"Got row {rec.row_id}: {rec.location} @ {rec.crash_date} {rec.crash_time}")
+                    except grpc.RpcError as e:
+                        if e.code() == grpc.StatusCode.NOT_FOUND:
+                            print(f"Row {query_id} not found")
+                        else:
+                            raise
+        else:
+            logger.warning(
+                f"Only {sent} records sent, which is less than start_id {start_id}; skipping range query."
+            )
+
     except grpc.RpcError as e:
         if e.code() == grpc.StatusCode.UNAVAILABLE:
-            logger.error(f"Leader unavailable. Leader may have changed. Try again.")
+            logger.error("Leader unavailable. Leader may have changed. Try again.")
         else:
             logger.error(f"RPC error: {e}")
     except Exception as e:
@@ -182,15 +206,21 @@ def run(csv_file, initial_server="localhost:50056"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Stream crash CSV to gRPC server")
     parser.add_argument("csv_file", help="Path to the crash CSV file")
-    parser.add_argument("--server", default="localhost:50056", 
-                        help="Initial server address (default: localhost:50056)")
+    parser.add_argument(
+        "--server",
+        default="localhost:50056",
+        help="Initial server address (default: localhost:50056)",
+    )
     args = parser.parse_args()
 
     if not args.csv_file or not os.path.isfile(args.csv_file):
         parser.error(f"CSV file not found: {args.csv_file!r}")
 
     try:
+        start_time = time.time()
         run(args.csv_file, args.server)
+        end_time = time.time()
+        print(f"Data streaming completed in {end_time - start_time:.2f} seconds")
     except KeyboardInterrupt:
         logger.info("Interrupted by user, exiting.")
         sys.exit(0)
