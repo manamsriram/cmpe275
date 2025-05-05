@@ -1065,7 +1065,6 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                                     f"[{self.node_id}] Failed to notify {u_id} to create connection: {e}"
                                 )
                                 continue
-
                         # Clear path cache to force recalculation of routes
                         self.path_cache = {}
                         return True
@@ -1259,7 +1258,6 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                 self.stubs[nid].UpdateTopology(request)
             except Exception as e:
                 print(f"[{self.node_id}] Error sending topology update to {nid}: {e}")
-
 
 def serve(config_path):
     # load all configs and adjacency
