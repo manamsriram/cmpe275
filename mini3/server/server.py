@@ -551,6 +551,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             pos_meta = int(meta.get("pos", "0"))
 
         for record in request_iterator:
+            print("got message")
             processed += 1
             rid = record.row_id
 
@@ -725,7 +726,13 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             path = json.loads(path_json)
             pos = int(meta.get("query_pos", "0"))
             if rid in self.local_records:
-                return crash_pb2.QueryResponse(record=self.local_records[rid])
+                nodeset = self.node_sets.get(rid, {self.node_id})
+                other = next(iter(nodeset - {self.node_id}), self.node_id)
+                return crash_pb2.QueryResponse(
+                    origin_node  = self.node_id,
+                    replica_node = other,
+                    record       = self.local_records[rid]
+                )
             if pos < len(path) - 1:
                 return self.stubs[path[pos + 1]].QueryRow(
                     request,
@@ -773,43 +780,71 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             context.set_code(grpc.StatusCode.NOT_FOUND)
             context.set_details(f"row_id {rid} not found on any node")
             return crash_pb2.QueryResponse()
+        
         # 5) Repair if fewer than RF successes
         if len(successes) < RF:
-            print(successes)
             best_node, best_rec = successes[0]
             orig = self.node_sets.get(rid, {n["id"] for n in self.nodes})
             got_ids = {nid for nid, _ in successes}
             missing = orig - got_ids
+            updated_orig = set(orig)
 
             # re-replicate missing originals
             for m in missing:
-                try:
-                    self._replicate_to(m, best_rec)
-                    got_ids.add(m)
-                except:
-                    # or pick a fresh node
-                    candidates = [n["id"] for n in self.nodes if n["id"] not in got_ids]
-                    if not candidates:
-                        continue
-                    new = random.choice(candidates)
-                    try:
-                        self._replicate_to(new, best_rec)
-                        orig.discard(m)
-                        orig.add(new)
-                        self.node_sets[rid] = orig
-                        got_ids.add(new)
-                    except:
-                        pass
+                path = find_path(self.adj, self.node_id, m)
+                print(f"[{self.node_id}] ▶️  replicate rid={rid} → {m}; path={path}", flush=True)
+                
+                stub = self.stubs.get(path[1])
+                if stub is None:
+                    print("No stub to target")
 
-            # overwrite one live replica to ensure freshness
-            try:
-                self._replicate_to(best_node, best_rec)
-            except:
-                pass
+                if not path:
+                    print(f"[{self.node_id}]   cannot reach {m}, picking alternate")
+                else:
+                    try:
+                        # find the freshest copy to re-send
+                        best_node, best_rec = successes[0]
+                        self._replicate_to(m, best_rec)
+                        print(f"[{self.node_id}]   re-replicated rid={rid} → {m}")
+                        got_ids.add(m)
+                        continue
+                    except Exception as e:
+                        print(f"[{self.node_id}]   replication to {m} failed: {e}")
+                    
+                candidates = [n["id"] for n in self.nodes if n["id"] not in got_ids]
+                
+                if candidates:
+                    alt = random.choice(candidates)
+                    try:
+                        best_node, best_rec = successes[0]
+                        self._replicate_to(alt, best_rec)
+                        print(f"[{self.node_id}]   fallback rid={rid} → {alt}")
+                        # update your node_sets to reflect swapping out m for alt
+                        updated_orig.discard(m)
+                        updated_orig.add(alt)
+                        got_ids.add(alt)
+                    except Exception as e:
+                        print(f"[{self.node_id}]   fallback to {alt} also failed: {e}")
+
+                try:
+                    best_node, best_rec = successes[0]
+                    self._replicate_to(best_node, best_rec)
+                except:
+                    pass
 
         # 6) Pick freshest and return
-        best_node, best_rec = successes[0]
-        return crash_pb2.QueryResponse(record=best_rec)
+        origin_id, origin_rec = successes[0]
+
+        # pick _one_ other node from the full set of replicas
+        nodeset = self.node_sets.get(rid, set())
+        other_replicas = nodeset - {origin_id}
+        replica_id = other_replicas.pop() if other_replicas else origin_id
+
+        return crash_pb2.QueryResponse(
+            origin_node  = origin_id,
+            replica_node = replica_id,
+            record       = origin_rec
+        )
 
     # helper to replicate a single record to node `nid`
     def _replicate_to(self, nid, record):
@@ -833,6 +868,8 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         ack = stub.SendCrashes(one(), metadata=meta)
         if not ack.success:
             raise RuntimeError(f"replication to {nid} failed: {ack.message}")
+        else:
+            print(f"[{self.node_id}] Replication to {nid} succeeded: {ack.message}")
 
     # Private function meant to handle when a node leaves or comes back
     def update_topology(self, new_node=None, removed_node=None):
