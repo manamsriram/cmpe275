@@ -929,7 +929,6 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                         self.adj.setdefault(u_id, []).append(r_id)
                         
                         # If we're creating a connection for ourselves, establish the stub
-                        # If we're creating a connection for ourselves, establish the stub
                         if r_id == self.node_id:
                             # Create our stub to the unreachable node
                             addr = f"{u_node['address']}:{u_node['port']}"
@@ -951,7 +950,8 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                                 print(f"[{self.node_id}] Notified {u_id} to create connection back to us")
                             except Exception as e:
                                 print(f"[{self.node_id}] Failed to notify {u_id} to create connection: {e}")
-
+                                # Don't return True here - connection wasn't fully established
+                                continue  # Try another node pair instead
                             
                         # Clear path cache to force recalculation of routes
                         self.path_cache = {}
@@ -990,30 +990,6 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                     # self.handle_node_failure(nid)
             self.detect_and_repair_network_partition()
 
-
-    def RegisterNode(self, request, context):
-        """
-        Allow new nodes to register with the network.
-        """
-        new_node = {
-            "id": request.node_id,
-            "address": request.address,
-            "port": request.port
-        }
-        
-        # Update our topology with the new node
-        self.update_topology(new_node=new_node)
-        
-        # If we're the leader, broadcast the updated topology
-        if self.is_leader:
-            self.broadcast_topology_update(new_node=new_node)
-        
-        return crash_pb2.RegisterNodeResponse(
-            success=True,
-            current_leader=self.leader_id or "",
-            nodes=[n["id"] for n in self.nodes]
-        )
-
     def GetAllNodes(self, request, context):
         """
         Return information about all nodes in the network.
@@ -1045,6 +1021,27 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             # Clear path cache
             self.path_cache = {}
             
+            # If we're the leader, recalculate paths
+            if self.is_leader:
+                print(f"[{self.node_id}] Leader recalculating paths after topology change")
+                if hasattr(self, "cached_targets"):
+                    del self.cached_targets
+            # If we're not the leader, forward the request to the leader
+            elif self.leader_id and self.leader_id != self.node_id:
+                try:
+                    # Get leader stub if needed
+                    if self.leader_id not in self.stubs:
+                        leader_node = next((n for n in self.nodes if n["id"] == self.leader_id), None)
+                        if leader_node:
+                            leader_addr = f"{leader_node['address']}:{leader_node['port']}"
+                            leader_channel = grpc.insecure_channel(leader_addr)
+                            self.stubs[self.leader_id] = crash_pb2_grpc.CrashReplicatorStub(leader_channel)
+                    
+                    # Forward the same request to the leader
+                    print(f"[{self.node_id}] Forwarding topology update to leader {self.leader_id}")
+                    self.stubs[self.leader_id].UpdateTopology(request)
+                except Exception as e:
+                    print(f"[{self.node_id}] Failed to forward topology update to leader: {e}")
         return crash_pb2.TopologyUpdateResponse(success=True)
 
     def broadcast_topology_update(self, new_node=None, removed_node=None):
@@ -1080,7 +1077,6 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                 self.stubs[nid].UpdateTopology(request)
             except Exception as e:
                 print(f"[{self.node_id}] Error sending topology update to {nid}: {e}")
-
 
 def serve(config_path):
     # load all configs and adjacency
