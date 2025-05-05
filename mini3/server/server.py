@@ -98,6 +98,11 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         t = threading.Thread(target=self._log_store_count, daemon=True)
         t.start()
 
+        # in-memory bounded store
+        self.store = deque()
+        self.store_size = 0
+        self.max_store_bytes = 200 * 1024 * 1024  # 200MB limit
+        
         # stubs to direct neighbors
         self.stubs = {}
         for p in peers:
@@ -106,10 +111,20 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             channel = grpc.insecure_channel(addr)
             self.stubs[pid] = crash_pb2_grpc.CrashReplicatorStub(channel)
 
-        # in-memory bounded store
-        self.store = deque()
-        self.store_size = 0
-        self.max_store_bytes = 200 * 1024 * 1024  # 200MB limit
+        # Now notify all peers that we're online
+        print(f"[{self.node_id}] Notifying peers that we're online")
+        for p in peers:
+            pid = p["id"]
+            try:
+                request = crash_pb2.NodeStatusUpdate(
+                    node_id=self.node_id,
+                    is_healthy=True,
+                    reporter_id=self.node_id
+                )
+                self.stubs[pid].UpdateNodeStatus(request)
+            except Exception as e:
+                print(f"[{self.node_id}] Failed to notify {pid}: {e}")
+                self.offline.add(pid)
 
         self.path_cache = {}
 
@@ -242,8 +257,41 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
     def start_election(self):
         if self.state == "leader":
             return
-
-        # Become candidate
+        
+        # Don't start election if we just started one recently
+        current_time = time.time()
+        if hasattr(self, 'last_election_time') and current_time - self.last_election_time < 2:
+            self.reset_election_timer()
+            return
+        
+        self.last_election_time = current_time
+            
+        # Pre-voting phase to prevent unnecessary elections
+        pre_vote_count = 1  # Vote for self
+        request = crash_pb2.VoteRequest(
+            term=self.current_term + 1,  # Propose next term
+            candidate_id=self.node_id,
+            score=0  # Not used in pre-vote
+        )
+        
+        # Request pre-votes from direct neighbors
+        for nbr_id in self.adj.get(self.node_id, []):
+            try:
+                response = self.stubs[nbr_id].RequestVote(
+                    request, 
+                    metadata=[("pre_vote", "true"), ("seen_nodes", self.node_id)]
+                )
+                if response.vote_granted:
+                    pre_vote_count += 1
+            except Exception as e:
+                print(f"[{self.node_id}] Error requesting pre-vote from {nbr_id}: {e}")
+        
+        # Only proceed if we got majority pre-votes
+        if pre_vote_count <= len(self.nodes) / 2:
+            self.reset_election_timer()
+            return
+            
+        # Become candidate and start actual election
         self.state = "candidate"
         self.current_term += 1
         self.voted_for = self.node_id
@@ -251,7 +299,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         self.leader_id = None
 
         print(f"[{self.node_id}] Starting election for term {self.current_term}")
-
+    
         # Create vote request
         request = crash_pb2.VoteRequest(
             term=self.current_term, candidate_id=self.node_id
@@ -428,34 +476,54 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
 
         term = self.current_term
 
-        # print(f"[{self.node_id}] Sending heartbeats for term {term}")
-
         for nbr_id in self.adj.get(self.node_id, []):
-            try:
-                request = crash_pb2.AppendEntriesRequest(
-                    term=term, leader_id=self.node_id
-                )
-
-                # Initialize seen_nodes with just the leader
-                seen_nodes = self.node_id
-
-                # print(f"[{self.node_id}] Sending heartbeat to {nbr_id}")
-                response = self.stubs[nbr_id].AppendEntries(
-                    request, metadata=[("seen_nodes", seen_nodes)]
-                )
-
-                if response.term > self.current_term:
-                    self.current_term = response.term
-                    self.state = "follower"
-                    self.is_leader = False
-                    self.voted_for = None
-                    self.reset_election_timer()
-                    return
-            except Exception as e:
-                print(f"[{self.node_id}] Error sending heartbeat to {nbr_id}: {e}")
+            retry_count = 0
+            max_retries = 3
+            while retry_count < max_retries:
+                try:
+                    request = crash_pb2.AppendEntriesRequest(
+                        term=term, leader_id=self.node_id
+                    )
+                    
+                    seen_nodes = self.node_id
+                    
+                    response = self.stubs[nbr_id].AppendEntries(
+                        request, metadata=[("seen_nodes", seen_nodes)]
+                    )
+                    
+                    if response.term > self.current_term:
+                        self.current_term = response.term
+                        self.state = "follower"
+                        self.is_leader = False
+                        self.voted_for = None
+                        self.reset_election_timer()
+                        return
+                        
+                    # Success, exit retry loop
+                    break
+                except Exception as e:
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        print(f"[{self.node_id}] Failed to send heartbeat to {nbr_id}: {e}")
+                    else:
+                        # Try to refresh connection
+                        try:
+                            if nbr_id in self.stubs:
+                                del self.stubs[nbr_id]
+                                
+                            # Create fresh connection
+                            node = next((n for n in self.nodes if n["id"] == nbr_id), None)
+                            if node:
+                                addr = f"{node['address']}:{node['port']}"
+                                channel = grpc.insecure_channel(addr)
+                                self.stubs[nbr_id] = crash_pb2_grpc.CrashReplicatorStub(channel)
+                        except:
+                            pass
+                        time.sleep(0.1)
 
         # Schedule next heartbeat
         self.reset_heartbeat_timer()
+
 
     def AppendEntries(self, request, context):
         meta = dict(context.invocation_metadata())
@@ -478,25 +546,45 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             self.is_leader = False
             self.leader_id = request.leader_id
 
-        # print(
-        #     f"[{self.node_id}] Received heartbeat from {request.leader_id} for term {request.term}"
-        # )
-
         # Forward heartbeat to neighbors who haven't seen it yet
         seen_list.append(self.node_id)
         new_seen = ",".join(seen_list)
 
         for nbr_id in self.adj.get(self.node_id, []):
             if nbr_id not in seen_list:
-                try:
-                    # print(f"[{self.node_id}] Forwarding heartbeat to {nbr_id}")
-                    self.stubs[nbr_id].AppendEntries(
-                        request, metadata=[("seen_nodes", new_seen)]
-                    )
-                except Exception as e:
-                    print(
-                        f"[{self.node_id}] Error forwarding heartbeat to {nbr_id}: {e}"
-                    )
+                retry_count = 0
+                max_retries = 3
+                while retry_count < max_retries:
+                    try:
+                        # Try to use existing stub
+                        if nbr_id in self.stubs:
+                            self.stubs[nbr_id].AppendEntries(
+                                request, metadata=[("seen_nodes", new_seen)]
+                            )
+                            break  # Success, exit retry loop
+                        else:
+                            # Create new stub if needed
+                            nbr_node = next((n for n in self.nodes if n["id"] == nbr_id), None)
+                            if nbr_node:
+                                addr = f"{nbr_node['address']}:{nbr_node['port']}"
+                                channel = grpc.insecure_channel(addr)
+                                self.stubs[nbr_id] = crash_pb2_grpc.CrashReplicatorStub(channel)
+                                self.stubs[nbr_id].AppendEntries(
+                                    request, metadata=[("seen_nodes", new_seen)]
+                                )
+                                break  # Success, exit retry loop
+                    except Exception as e:
+                        retry_count += 1
+                        if retry_count >= max_retries:
+                            print(f"[{self.node_id}] Failed to forward heartbeat to {nbr_id} after {max_retries} attempts: {e}")
+                        else:
+                            # Try to refresh connection before next attempt
+                            try:
+                                if nbr_id in self.stubs:
+                                    del self.stubs[nbr_id]
+                            except:
+                                pass
+                            time.sleep(0.1)  # Short delay before retry
 
         original_leader = meta.get("original_leader", request.leader_id)
         if original_leader != self.node_id and original_leader != request.leader_id:
@@ -527,6 +615,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         # For heartbeats, just acknowledge
         return crash_pb2.AppendEntriesResponse(term=self.current_term, success=True)
 
+
     def _store(self, raw):
         self.store.append(raw)
         self.store_size += len(raw)
@@ -539,6 +628,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         Clientâ€streaming RPC. Now accepts updates for the same row_id
         if the incoming vector_clock is larger than previously seen.
         """
+        had_errors = False
         meta = dict(context.invocation_metadata())
         is_repop = meta.get("repopulate") == "1"
         processed = 0
@@ -554,7 +644,8 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             print("got message")
             processed += 1
             rid = record.row_id
-
+            if is_repop:
+                print(f"[{self.node_id}] Processing repopulation record {rid}, stored={rid in self.local_records}")
             # Determine incoming clock
             incoming_vc = vector_clock if not self.is_leader else 0
             # Get this nodeâ€™s previously stored clock for rid
@@ -656,7 +747,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                     continue
 
                 # Final hop: store/overwrite locally
-                if pos == len(pth) - 1:
+                if pos == len(pth) - 1 or is_repop:  # <-- Add this condition
                     incoming = meta.get("node_set", "")
                     full_set = set(incoming.split(",")) if incoming else set()
                     self.node_sets[rid] = full_set
@@ -664,10 +755,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
 
                     self._store(raw)
                     self.local_records[rid] = record
-                    print(
-                        f"[{self.node_id}] stored/updated row {rid}, vc={incoming_vc}"
-                    )
-
+                    print(f"[{self.node_id}] stored/updated row {rid}, vc={incoming_vc}")
                 else:
                     # Forward onward
                     next_hop = pth[pos + 1]
@@ -693,8 +781,12 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                             )
                     except Exception as e:
                         print(f"[{self.node_id}] Error forwarding to {next_hop}: {e}")
+                        had_errors = True
 
-        return crash_pb2.Ack(success=True, message=f"Processed {processed} records")
+        if had_errors:
+            return crash_pb2.Ack(success=False, message=f"Processed {processed} records with errors")
+        else:
+            return crash_pb2.Ack(success=True, message=f"Processed {processed} records")
 
     def HeartbeatAck(self, request, context):
         if self.state != "leader":
@@ -805,14 +897,26 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
 
     # helper to replicate a single record to node `nid`
     def _replicate_to(self, nid, record):
-        """
-        Sends a one-off SendCrashes with the given record to node `nid`.
-        Raises on RPC error.
-        """
-        # build a trivial path [leader -> nid]
+        # Try direct connection first for repopulation
+        if nid in self.stubs:
+            try:
+                meta = [("repopulate", "1")]
+                
+                def one():
+                    yield record
+                    
+                ack = self.stubs[nid].SendCrashes(one(), metadata=meta)
+                if ack.success:
+                    print(f"[{self.node_id}] Direct replication to {nid} succeeded")
+                    return
+            except Exception as e:
+                print(f"[{self.node_id}] Direct replication failed, trying path: {e}")
+        
+        # Fall back to path-based routing
         path = find_path(self.adj, self.node_id, nid)
         if not path or len(path) < 2:
             raise RuntimeError(f"No route to {nid}")
+            
         stub = self.stubs[path[1]]
         meta = [
             ("paths", json.dumps({nid: path})),
@@ -888,6 +992,30 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
     def handle_node_rejoin(self, recovered_id):
         if not self.is_leader:
             return
+        
+        print(f"[{self.node_id}] Starting recovery for node {recovered_id}")
+        
+        # Ensure fresh connection to recovered node
+        recovered_node = next((n for n in self.nodes if n["id"] == recovered_id), None)
+        if recovered_node:
+            try:
+                # Close any existing connection
+                if recovered_id in self.stubs:
+                    del self.stubs[recovered_id]
+                    
+                # Create fresh channel with retry settings
+                addr = f"{recovered_node['address']}:{recovered_node['port']}"
+                channel = grpc.insecure_channel(
+                    addr,
+                    options=[
+                        ('grpc.enable_retries', 1),
+                        ('grpc.initial_reconnect_backoff_ms', 500),
+                        ('grpc.max_reconnect_backoff_ms', 10000)
+                    ]
+                )
+                self.stubs[recovered_id] = crash_pb2_grpc.CrashReplicatorStub(channel)
+            except Exception as e:
+                print(f"[{self.node_id}] Error reconnecting to {recovered_id}: {e}")
 
         # Collect all (rid, record) pairs we need to push
         to_push = []
@@ -1068,78 +1196,84 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         return True
 
     def monitor_node_health(self):
-        """
-        Periodically ping every node in self.nodes (except ourselves),
-        track which ones we think are offline, and fire
-        handle_node_rejoin/recovery when they come back.
-        """
         while True:
             time.sleep(5)
-            # print(self.node_sets)
             for node in list(self.nodes):
                 nid = node["id"]
                 if nid == self.node_id:
                     continue
 
                 try:
-                    stub = self.stubs.get(nid)
-                    # print(f"Checking if stub exists for {nid}. {stub}")
-                    if stub is None:
-                        addr = f"{node['address']}:{node['port']}"
-                        stub = crash_pb2_grpc.CrashReplicatorStub(
-                            grpc.insecure_channel(addr)
-                        )
-                        self.stubs[nid] = stub
-
-                    # --- ping it ---
+                    # Try to get a fresh connection every time
+                    addr = f"{node['address']}:{node['port']}"
+                    channel = grpc.insecure_channel(
+                        addr,
+                        options=[
+                            ('grpc.enable_retries', 1),
+                            ('grpc.initial_reconnect_backoff_ms', 500),
+                            ('grpc.max_reconnect_backoff_ms', 10000),
+                            ('grpc.keepalive_time_ms', 10000),
+                            ('grpc.keepalive_timeout_ms', 5000)
+                        ]
+                    )
+                    
+                    # Test connection with timeout
+                    stub = crash_pb2_grpc.CrashReplicatorStub(channel)
                     alive = True
                     try:
-                        # print("Attempting to get stub for node")
                         stub.GetLeader(crash_pb2.LeaderRequest(), timeout=2)
-                        # print("Got stub for node")
-                    except grpc.RpcError:
+                    except Exception:
                         alive = False
-
-                    # print(f"Checking {nid} for liveness. Alive = {alive}. In offline = {nid in self.offline}")
-
-                    # --- recovery: it was offline, now it's alive ---
+                    
+                    # Recovery detection
                     if alive and nid in self.offline:
                         print(f"[{self.node_id}] RECOVERY detected for {nid}")
-                        # re-add to adjacency so heartbeats resume
+                        
+                        # Update our stubs with the working connection
+                        self.stubs[nid] = stub
+                        
+                        # Update adjacency list
                         if nid not in self.adj.get(self.node_id, []):
                             self.adj.setdefault(self.node_id, []).append(nid)
-                        # only the leader pumps the missing data
+                        
+                        # Tell the recovered node to add us back
+                        try:
+                            request = crash_pb2.TopologyUpdateRequest(
+                                update_type="add",
+                                node_id=self.node_id,
+                                address=next((n["address"] for n in self.nodes if n["id"] == self.node_id), ""),
+                                port=next((n["port"] for n in self.nodes if n["id"] == self.node_id), 0)
+                            )
+                            stub.UpdateTopology(request)
+                            print(f"[{self.node_id}] Notified {nid} to add us back")
+                        except Exception as e:
+                            print(f"[{self.node_id}] Failed to notify {nid}: {e}")
+                        
+                        # Broadcast recovery to all nodes
+                        self.broadcast_node_status(nid, True)
+                        
+                        # Leader repopulates data
                         if self.is_leader:
                             self.handle_node_rejoin(nid)
+                            
                         self.offline.remove(nid)
-                        continue
-
-                    # --- failure: it was online, now it's dead ---
-                    if not alive and nid not in self.offline:
+                    
+                    # Failure detection
+                    elif not alive and nid not in self.offline:
                         print(f"[{self.node_id}] FAILURE detected for {nid}")
-                        # prune it out of our adjacency
+                        self.offline.add(nid)
+                        
+                        # Remove from adjacency
                         if nid in self.adj.get(self.node_id, []):
                             self.adj[self.node_id].remove(nid)
-                        self.offline.add(nid)
-                        continue
-
-                    # --- otherwise, nothing to do for this node ---
+                        
+                        # Broadcast failure
+                        self.broadcast_node_status(nid, False)
+                        
                 except Exception as e:
-                    # catch *any* bug in our health code so the thread never dies
                     print(f"[{self.node_id}] monitor_node_health error for {nid}: {e}")
-                    continue
-
-                # Only maintain heartbeats to direct peers
-                if nid not in self.adj.get(self.node_id, []):
-                    continue
-
-                # Fire a heartbeat just to keep the channel warm
-                try:
-                    stub.GetLeader(crash_pb2.LeaderRequest(), timeout=2)
-                except grpc.RpcError:
-                    pass
-
-            # Try to stitch up any network partitions
+                    
+            # Check for network partitions
             self.detect_and_repair_network_partition()
 
     def RegisterNode(self, request, context):
@@ -1182,54 +1316,39 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
 
     def UpdateTopology(self, request, context):
         if request.update_type == "add":
-            # Create a stub to the node that sent the request
+            # Create a fresh stub to the node
             addr = f"{request.address}:{request.port}"
-            channel = grpc.insecure_channel(addr)
+            channel = grpc.insecure_channel(
+                addr,
+                options=[
+                    ('grpc.enable_retries', 1),
+                    ('grpc.initial_reconnect_backoff_ms', 500),
+                    ('grpc.max_reconnect_backoff_ms', 10000),
+                    ('grpc.keepalive_time_ms', 10000),
+                    ('grpc.keepalive_timeout_ms', 5000)
+                ]
+            )
             self.stubs[request.node_id] = crash_pb2_grpc.CrashReplicatorStub(channel)
 
             # Update adjacency list
             if request.node_id not in self.adj.get(self.node_id, []):
                 self.adj.setdefault(self.node_id, []).append(request.node_id)
+            
+            # Remove from offline set if present
+            if request.node_id in self.offline:
+                self.offline.remove(request.node_id)
 
             print(f"[{self.node_id}] Created connection to {request.node_id}")
-
+            
             # Clear path cache
             self.path_cache = {}
-
-            # If we're the leader, recalculate paths
+            
+            # If leader, handle data repopulation
             if self.is_leader:
-                print(
-                    f"[{self.node_id}] Leader recalculating paths after topology change"
-                )
-                if hasattr(self, "cached_targets"):
-                    del self.cached_targets
-            # If we're not the leader, forward the request to the leader
-            elif self.leader_id and self.leader_id != self.node_id:
-                try:
-                    # Get leader stub if needed
-                    if self.leader_id not in self.stubs:
-                        leader_node = next(
-                            (n for n in self.nodes if n["id"] == self.leader_id), None
-                        )
-                        if leader_node:
-                            leader_addr = (
-                                f"{leader_node['address']}:{leader_node['port']}"
-                            )
-                            leader_channel = grpc.insecure_channel(leader_addr)
-                            self.stubs[self.leader_id] = (
-                                crash_pb2_grpc.CrashReplicatorStub(leader_channel)
-                            )
-
-                    # Forward the same request to the leader
-                    print(
-                        f"[{self.node_id}] Forwarding topology update to leader {self.leader_id}"
-                    )
-                    self.stubs[self.leader_id].UpdateTopology(request)
-                except Exception as e:
-                    print(
-                        f"[{self.node_id}] Failed to forward topology update to leader: {e}"
-                    )
+                self.handle_node_rejoin(request.node_id)
+                
         return crash_pb2.TopologyUpdateResponse(success=True)
+
 
     def broadcast_topology_update(self, new_node=None, removed_node=None):
         """
@@ -1263,6 +1382,76 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                 self.stubs[nid].UpdateTopology(request)
             except Exception as e:
                 print(f"[{self.node_id}] Error sending topology update to {nid}: {e}")
+
+    def broadcast_node_status(self, node_id, is_online):
+        """Broadcast node status change to all nodes in the cluster"""
+        print(f"[{self.node_id}] Broadcasting that node {node_id} is now {'online' if is_online else 'offline'}")
+        
+        request = crash_pb2.NodeStatusUpdate(
+            node_id=node_id,
+            is_healthy=is_online,
+            reporter_id=self.node_id
+        )
+        
+        for nbr_id in self.adj.get(self.node_id, []):
+            try:
+                self.stubs[nbr_id].UpdateNodeStatus(
+                    request, 
+                    metadata=[("propagate", "true"), ("seen_nodes", self.node_id)]
+                )
+            except Exception as e:
+                print(f"[{self.node_id}] Failed to notify {nbr_id} about node status: {e}")
+
+
+    def UpdateNodeStatus(self, request, context):
+        node_id = request.node_id
+        is_healthy = request.is_healthy
+        reporter_id = request.reporter_id
+        
+        # Get propagation metadata
+        meta = dict(context.invocation_metadata())
+        should_propagate = meta.get("propagate", "false").lower() == "true"
+        seen_nodes = meta.get("seen_nodes", "")
+        seen_list = seen_nodes.split(",") if seen_nodes else []
+        
+        print(f"[{self.node_id}] Received node status update: {node_id} is {'healthy' if is_healthy else 'unhealthy'} from {reporter_id}")
+        
+        # Update our local view
+        if is_healthy:
+            if node_id in self.offline:
+                self.offline.remove(node_id)
+                
+            # If this node is coming back online, update topology
+            if node_id not in self.adj.get(self.node_id, []):
+                self.adj.setdefault(self.node_id, []).append(node_id)
+                
+            # Refresh connection if needed
+            node_info = next((n for n in self.nodes if n["id"] == node_id), None)
+            if node_info and node_id not in self.stubs:
+                addr = f"{node_info['address']}:{node_info['port']}"
+                channel = grpc.insecure_channel(addr)
+                self.stubs[node_id] = crash_pb2_grpc.CrashReplicatorStub(channel)
+        else:
+            self.offline.add(node_id)
+            if node_id in self.adj.get(self.node_id, []):
+                self.adj[self.node_id].remove(node_id)
+        
+        # Propagate to neighbors who haven't seen this update
+        if should_propagate:
+            seen_list.append(self.node_id)
+            new_seen = ",".join(seen_list)
+            
+            for nbr_id in self.adj.get(self.node_id, []):
+                if nbr_id not in seen_list:
+                    try:
+                        self.stubs[nbr_id].UpdateNodeStatus(
+                            request,
+                            metadata=[("propagate", "true"), ("seen_nodes", new_seen)]
+                        )
+                    except Exception as e:
+                        print(f"[{self.node_id}] Error propagating node status to {nbr_id}: {e}")
+        
+        return crash_pb2.Ack(success=True, message="Status update received")
 
 def serve(config_path):
     # load all configs and adjacency

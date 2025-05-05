@@ -122,6 +122,12 @@ message QueryResponse {
   CrashRecord record = 3;
 }
 
+message NodeStatusUpdate {
+  string node_id = 1;
+  bool is_healthy = 2;
+  string reporter_id = 3;
+}
+
 // New messages for node registration and topology management
 message RegisterNodeRequest {
   string node_id = 1;
@@ -179,5 +185,6 @@ service CrashReplicator {
   // New methods for network resilience
   rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
   rpc UpdateTopology(TopologyUpdateRequest) returns (TopologyUpdateResponse);
+  rpc UpdateNodeStatus(NodeStatusUpdate) returns (Ack);
   rpc GetAllNodes(GetAllNodesRequest) returns (GetAllNodesResponse);
 }
