@@ -541,6 +541,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         if the incoming vector_clock is larger than previously seen.
         """
         meta = dict(context.invocation_metadata())
+        is_repop = meta.get("repopulate") == "1"
         processed = 0
 
         # Parse headers for follower‐side routing
@@ -561,7 +562,8 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             prev_vc = self.vector_clocks.get(rid, {}).get(self.node_id, -1)
 
             # Skip if we've already stored a version as new or newer
-            if rid in self.seen_ids and incoming_vc <= prev_vc:
+            if not is_repop and rid in self.seen_ids and incoming_vc <= prev_vc:
+                print("here")
                 continue
 
             # Mark seen and update this node’s clock
@@ -599,7 +601,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                         sorted_scores = sorted(
                             response.collected_scores, key=lambda x: x.score
                         )
-                        
+
                         # Choose the 2 best server IDs
                         unique_scores = {}
                         for s in sorted_scores:
@@ -708,40 +710,44 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         """
         Unary RPC to fetch a single row by row_id via routed forwarding.
         Leader:
-          - broadcast routed QueryRow to every node
-          - collect successes
-          - if successes < RF, repair missing replicas
-          - if successes == 0, return NOT_FOUND
-          - return freshest record
+        - broadcast routed QueryRow to every node
+        - collect successes
+        - if successes < RF, repair missing replicas
+        - if successes == 0, return NOT_FOUND
+        - return freshest record
         Followers:
-          - if local, reply
-          - else forward to leader
+        - if local, reply
+        - else forward to leader
         """
         rid = request.row_id
         meta = dict(context.invocation_metadata())
         path_json = meta.get("query_path")
 
-        # 1) Routed hop-by-hop
-        if path_json is not None:
+        # 1) Hop-by-hop: ONLY followers take this early‐return path
+        if path_json is not None and not self.is_leader:
             path = json.loads(path_json)
             pos = int(meta.get("query_pos", "0"))
+
             if rid in self.local_records:
+                # pick one other replica purely for reporting
                 nodeset = self.node_sets.get(rid, {self.node_id})
                 other = next(iter(nodeset - {self.node_id}), self.node_id)
                 return crash_pb2.QueryResponse(
-                    origin_node  = self.node_id,
-                    replica_node = other,
-                    record       = self.local_records[rid]
+                    origin_node=self.node_id,
+                    replica_node=other,
+                    record=self.local_records[rid],
                 )
+
             if pos < len(path) - 1:
                 return self.stubs[path[pos + 1]].QueryRow(
                     request,
                     metadata=[("query_path", path_json), ("query_pos", str(pos + 1))],
                 )
+
             context.set_code(grpc.StatusCode.NOT_FOUND)
             return crash_pb2.QueryResponse()
 
-        # 2) Non-leader forwards to leader
+        # 2) Non-leader that somehow didn't carry query_path (e.g. client)
         if not self.is_leader:
             if not self.leader_id:
                 context.set_code(grpc.StatusCode.NOT_FOUND)
@@ -752,7 +758,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             )
             return stub.QueryRow(request)
 
-        # 3) Leader entrypoint: gather successes
+        # 3) Leader entrypoint: gather replies
         successes = []
         if rid in self.local_records:
             successes.append((self.node_id, self.local_records[rid]))
@@ -775,75 +781,71 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
 
         RF = 2
 
-        # 4) If no successes, return NOT_FOUND
+        # 4) No replicas found
         if not successes:
             context.set_code(grpc.StatusCode.NOT_FOUND)
             context.set_details(f"row_id {rid} not found on any node")
             return crash_pb2.QueryResponse()
-        
-        # 5) Repair if fewer than RF successes
-        if len(successes) < RF:
-            best_node, best_rec = successes[0]
-            orig = self.node_sets.get(rid, {n["id"] for n in self.nodes})
-            got_ids = {nid for nid, _ in successes}
-            missing = orig - got_ids
-            updated_orig = set(orig)
 
-            # re-replicate missing originals
+        # 5) Repair if under-replicated
+        if len(successes) < RF:
+            got_ids = {nid for nid, _ in successes}
+            orig = set(self.node_sets.get(rid, {n["id"] for n in self.nodes}))
+            missing = orig - got_ids
+            print(
+                f"[{self.node_id}] RID={rid} under-replicated; replies={got_ids}",
+                flush=True,
+            )
+            print(f"[{self.node_id}]   missing replicas at {missing}", flush=True)
+
+            # always pick the freshest copy for re-send
+            best_node, best_rec = successes[0]
+
             for m in missing:
                 path = find_path(self.adj, self.node_id, m)
-                print(f"[{self.node_id}] ▶️  replicate rid={rid} → {m}; path={path}", flush=True)
-                
-                stub = self.stubs.get(path[1])
-                if stub is None:
-                    print("No stub to target")
-
-                if not path:
-                    print(f"[{self.node_id}]   cannot reach {m}, picking alternate")
-                else:
+                print(
+                    f"[{self.node_id}] ▶ replicate rid={rid} → {m}; path={path}",
+                    flush=True,
+                )
+                if path and len(path) >= 2:
                     try:
-                        # find the freshest copy to re-send
-                        best_node, best_rec = successes[0]
                         self._replicate_to(m, best_rec)
-                        print(f"[{self.node_id}]   re-replicated rid={rid} → {m}")
+                        print(
+                            f"[{self.node_id}]   re-replicated rid={rid} → {m}",
+                            flush=True,
+                        )
                         got_ids.add(m)
                         continue
                     except Exception as e:
-                        print(f"[{self.node_id}]   replication to {m} failed: {e}")
-                    
+                        print(f"[{self.node_id}]   failed → {m}: {e}", flush=True)
+
+                # fallback if target unreachable
                 candidates = [n["id"] for n in self.nodes if n["id"] not in got_ids]
-                
                 if candidates:
                     alt = random.choice(candidates)
                     try:
-                        best_node, best_rec = successes[0]
                         self._replicate_to(alt, best_rec)
-                        print(f"[{self.node_id}]   fallback rid={rid} → {alt}")
-                        # update your node_sets to reflect swapping out m for alt
-                        updated_orig.discard(m)
-                        updated_orig.add(alt)
+                        print(
+                            f"[{self.node_id}]   fallback rid={rid} → {alt}", flush=True
+                        )
+                        orig.discard(m)
+                        orig.add(alt)
                         got_ids.add(alt)
                     except Exception as e:
-                        print(f"[{self.node_id}]   fallback to {alt} also failed: {e}")
+                        print(
+                            f"[{self.node_id}]   fallback to {alt} failed: {e}",
+                            flush=True,
+                        )
 
-                try:
-                    best_node, best_rec = successes[0]
-                    self._replicate_to(best_node, best_rec)
-                except:
-                    pass
-
-        # 6) Pick freshest and return
+        # 6) Return the freshest copy, plus one other replica for context
         origin_id, origin_rec = successes[0]
-
-        # pick _one_ other node from the full set of replicas
-        nodeset = self.node_sets.get(rid, set())
-        other_replicas = nodeset - {origin_id}
-        replica_id = other_replicas.pop() if other_replicas else origin_id
+        nodeset = self.node_sets.get(rid, {origin_id})
+        other = next(iter(nodeset - {origin_id}), origin_id)
 
         return crash_pb2.QueryResponse(
-            origin_node  = origin_id,
-            replica_node = replica_id,
-            record       = origin_rec
+            origin_node=origin_id,
+            replica_node=other,
+            record=origin_rec,
         )
 
     # helper to replicate a single record to node `nid`
@@ -860,6 +862,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         meta = [
             ("paths", json.dumps({nid: path})),
             ("pos", "0"),
+            ("repopulate", "1"),
         ]
 
         def one():
@@ -1142,9 +1145,8 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                     except grpc.RpcError:
                         alive = False
 
-
                     # print(f"Checking {nid} for liveness. Alive = {alive}. In offline = {nid in self.offline}")
-                    
+
                     # --- recovery: it was offline, now it's alive ---
                     if alive and nid in self.offline:
                         print(f"[{self.node_id}] RECOVERY detected for {nid}")
@@ -1171,7 +1173,6 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                     # catch *any* bug in our health code so the thread never dies
                     print(f"[{self.node_id}] monitor_node_health error for {nid}: {e}")
                     continue
-
 
                 # Only maintain heartbeats to direct peers
                 if nid not in self.adj.get(self.node_id, []):
@@ -1230,19 +1231,21 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             addr = f"{request.address}:{request.port}"
             channel = grpc.insecure_channel(addr)
             self.stubs[request.node_id] = crash_pb2_grpc.CrashReplicatorStub(channel)
-            
+
             # Update adjacency list
             if request.node_id not in self.adj.get(self.node_id, []):
                 self.adj.setdefault(self.node_id, []).append(request.node_id)
-            
+
             print(f"[{self.node_id}] Created connection to {request.node_id}")
-            
+
             # Clear path cache
             self.path_cache = {}
-            
+
             # If we're the leader, recalculate paths
             if self.is_leader:
-                print(f"[{self.node_id}] Leader recalculating paths after topology change")
+                print(
+                    f"[{self.node_id}] Leader recalculating paths after topology change"
+                )
                 if hasattr(self, "cached_targets"):
                     del self.cached_targets
             # If we're not the leader, forward the request to the leader
@@ -1250,17 +1253,27 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                 try:
                     # Get leader stub if needed
                     if self.leader_id not in self.stubs:
-                        leader_node = next((n for n in self.nodes if n["id"] == self.leader_id), None)
+                        leader_node = next(
+                            (n for n in self.nodes if n["id"] == self.leader_id), None
+                        )
                         if leader_node:
-                            leader_addr = f"{leader_node['address']}:{leader_node['port']}"
+                            leader_addr = (
+                                f"{leader_node['address']}:{leader_node['port']}"
+                            )
                             leader_channel = grpc.insecure_channel(leader_addr)
-                            self.stubs[self.leader_id] = crash_pb2_grpc.CrashReplicatorStub(leader_channel)
-                    
+                            self.stubs[self.leader_id] = (
+                                crash_pb2_grpc.CrashReplicatorStub(leader_channel)
+                            )
+
                     # Forward the same request to the leader
-                    print(f"[{self.node_id}] Forwarding topology update to leader {self.leader_id}")
+                    print(
+                        f"[{self.node_id}] Forwarding topology update to leader {self.leader_id}"
+                    )
                     self.stubs[self.leader_id].UpdateTopology(request)
                 except Exception as e:
-                    print(f"[{self.node_id}] Failed to forward topology update to leader: {e}")
+                    print(
+                        f"[{self.node_id}] Failed to forward topology update to leader: {e}"
+                    )
         return crash_pb2.TopologyUpdateResponse(success=True)
 
     def broadcast_topology_update(self, new_node=None, removed_node=None):
