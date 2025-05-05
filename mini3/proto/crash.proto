@@ -34,20 +34,12 @@ message Ack {
   string message = 2;
 }
 
-message NodeStatusUpdate {
-  string node_id = 1;
-  bool is_healthy = 2;
-  string reporter_id = 3;
-}
-
 message VoteRequest {
   int32 term = 1;
   string candidate_id = 2;
   float score = 3;
-  float load_avg = 4;
-  float io_wait = 5;
-  float net_usage_mb = 6;
-  float memory_stored_mb = 7;
+  float disk_percent = 4;
+  float memory_stored_mb = 5;
 }
 
 message VoteResponse {
@@ -64,37 +56,6 @@ message HeartbeatAckRequest {
 
 message HeartbeatAckResponse {
   bool received = 1;
-}
-
-
-message AppendEntriesRequest {
-  int32 term = 1;
-  string leader_id = 2;
-  string message_id = 3;  // For deduplication in flooding
-  int32 ttl = 4;          // To prevent infinite forwarding
-  // In a full implementation, you would include more fields for log replication
-}
-
-message AppendEntriesResponse {
-  int32 term = 1;
-  bool success = 2;
-}
-
-message ServerEndpoint {
-  string server_id = 1;
-  string address = 2;
-  int32 port = 3;
-}
-
-message LeaderRequest {
-  // Empty request
-}
-
-message LeaderResponse {
-  bool is_leader = 1;
-  string leader_address = 2;
-  int32 leader_port = 3;
-  repeated ServerEndpoint server_endpoints = 4; 
 }
 
 message ResourceScoreRequest {
@@ -161,6 +122,19 @@ message QueryResponse {
   CrashRecord record = 3;
 }
 
+// New messages for node registration and topology management
+message RegisterNodeRequest {
+  string node_id = 1;
+  string address = 2;
+  int32 port = 3;
+}
+
+message RegisterNodeResponse {
+  bool success = 1;
+  string current_leader = 2;
+  repeated string nodes = 3;
+}
+
 message TopologyUpdateRequest {
   string update_type = 1;  // "add" or "remove"
   string node_id = 2;
@@ -198,9 +172,12 @@ service CrashReplicator {
 
   rpc HeartbeatAck(HeartbeatAckRequest) returns (HeartbeatAckResponse);
 
+  rpc QueryRow(QueryRequest) returns (QueryResponse);
+
   rpc PropagateResourceScore(ResourceScoreRequest) returns (ResourceScoreResponse);
 
   // New methods for network resilience
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
   rpc UpdateTopology(TopologyUpdateRequest) returns (TopologyUpdateResponse);
   rpc GetAllNodes(GetAllNodesRequest) returns (GetAllNodesResponse);
 }
