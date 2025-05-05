@@ -154,7 +154,7 @@ def get_leader_address(initial_server="localhost:50056", known_servers=None):
 
 
 def run(csv_file, initial_server="localhost:50056"):
-    MAX_ROWS = 40_000
+    MAX_ROWS = 100_000
 
     # Count rows (minus header and final newline), then cap to MAX_ROWS
     with open(csv_file, newline="", encoding="utf-8") as f:
@@ -183,6 +183,8 @@ def run(csv_file, initial_server="localhost:50056"):
                     if sent >= total_rows:
                         break
                     sent += 1
+                    if sent % 1000 == 0:
+                        logger.info(f"Sent {sent} records so far...")
                     yield rec
             
             ack = stub.SendCrashes(generator())
@@ -196,8 +198,8 @@ def run(csv_file, initial_server="localhost:50056"):
                 # # Only query if we actually sent something
                 if sent > 0:
                     # Instead of random, iterate row_id 1000–2000 (within what we sent)
-                    start_id = 1000
-                    end_id = min(sent, 4_000)
+                    start_id = 1_000
+                    end_id = min(sent, 50_000)
                     if end_id >= start_id:
                         for query_id in range(start_id, end_id + 1):
                             logger.info(f"Querying row_id={query_id}…")

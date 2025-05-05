@@ -117,7 +117,9 @@ message QueryRequest {
 }
 
 message QueryResponse {
-  CrashRecord record = 1;
+  string origin_node = 1;
+  string replica_node = 2;
+  CrashRecord record = 3;
 }
 
 // New messages for node registration and topology management
