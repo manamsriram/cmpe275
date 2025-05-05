@@ -680,6 +680,7 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                         ("pos", str(pos + 1)),
                         ("vector_clock", str(vector_clock)),
                         ("node_set", node_set),
+                        ("repopulate", "1") if is_repop else ("repopulate", "0"),
                     ]
 
                     def one():
@@ -858,10 +859,15 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
         path = find_path(self.adj, self.node_id, nid)
         if not path or len(path) < 2:
             raise RuntimeError(f"No route to {nid}")
-        stub = self.stubs[path[1]]
+
+        # send first to path[1]
+        next_hop = path[1]
+        stub = self.stubs[next_hop]
+
+        # start at index=1 so that the first hop sees itself at pth[1]
         meta = [
-            ("paths", json.dumps({nid: path})),
-            ("pos", "0"),
+            ("paths", json.dumps({ nid: path })),
+            ("pos", "1"),
             ("repopulate", "1"),
         ]
 
