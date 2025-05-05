@@ -5,7 +5,6 @@ import argparse
 import csv
 import logging
 import grpc
-import random
 import time
 
 from proto import crash_pb2, crash_pb2_grpc
@@ -155,7 +154,7 @@ def get_leader_address(initial_server="localhost:50056", known_servers=None):
 
 
 def run(csv_file, initial_server="localhost:50056"):
-    MAX_ROWS = 500_000
+    MAX_ROWS = 40_000
 
     # Count rows (minus header and final newline), then cap to MAX_ROWS
     with open(csv_file, newline="", encoding="utf-8") as f:
@@ -195,26 +194,26 @@ def run(csv_file, initial_server="localhost:50056"):
                 logger.info(f"Server received: {ack.message}")
                 
                 # # Only query if we actually sent something
-                # if sent > 0:
-                #     # Instead of random, iterate row_id 1000–2000 (within what we sent)
-                #     start_id = 1000
-                #     end_id = min(sent, 10000)
-                #     if end_id >= start_id:
-                #         for query_id in range(start_id, end_id + 1):
-                #             logger.info(f"Querying row_id={query_id}…")
-                #             try:
-                #                 resp = stub.QueryRow(crash_pb2.QueryRequest(row_id=query_id))
-                #                 rec = resp.record
-                #                 print(f"Got row {rec.row_id}: {rec.location} @ {rec.crash_date} {rec.crash_time}")
-                #             except grpc.RpcError as e:
-                #                 if e.code() == grpc.StatusCode.NOT_FOUND:
-                #                     print(f"Row {query_id} not found")
-                #                 else:
-                #                     raise
-                #     else:
-                #         logger.warning(
-                #             f"Only {sent} records sent, which is less than start_id {start_id}; skipping range query."
-                #         )
+                if sent > 0:
+                    # Instead of random, iterate row_id 1000–2000 (within what we sent)
+                    start_id = 1000
+                    end_id = min(sent, 4_000)
+                    if end_id >= start_id:
+                        for query_id in range(start_id, end_id + 1):
+                            logger.info(f"Querying row_id={query_id}…")
+                            try:
+                                resp = stub.QueryRow(crash_pb2.QueryRequest(row_id=query_id))
+                                rec = resp.record
+                                print(f"Got row {rec.row_id}: {rec.location} @ {rec.crash_date} {rec.crash_time}")
+                            except grpc.RpcError as e:
+                                if e.code() == grpc.StatusCode.NOT_FOUND:
+                                    print(f"Row {query_id} not found")
+                                else:
+                                    raise
+                    else:
+                        logger.warning(
+                            f"Only {sent} records sent, which is less than start_id {start_id}; skipping range query."
+                        )
                 
                 break  # Success, exit the retry loop
             else:
