@@ -121,6 +121,69 @@ message ResourceScore {
   float memory_stored_mb = 6;
 }
 
+message AppendEntriesRequest {
+  int32 term = 1;
+  string leader_id = 2;
+  string message_id = 3;  // For deduplication in flooding
+  int32 ttl = 4;          // To prevent infinite forwarding
+  // In a full implementation, you would include more fields for log replication
+}
+
+message AppendEntriesResponse {
+  int32 term = 1;
+  bool success = 2;
+}
+
+message LeaderRequest {
+  // Empty request
+}
+
+message ServerEndpoint {
+  string server_id = 1;
+  string address = 2;
+  int32 port = 3;
+}
+
+message LeaderResponse {
+  bool is_leader = 1;
+  string leader_address = 2;
+  int32 leader_port = 3;
+  repeated ServerEndpoint server_endpoints = 4;
+}
+
+message QueryRequest {
+  int32 row_id = 1;
+}
+
+message QueryResponse {
+  string origin_node = 1;
+  string replica_node = 2;
+  CrashRecord record = 3;
+}
+
+message TopologyUpdateRequest {
+  string update_type = 1;  // "add" or "remove"
+  string node_id = 2;
+  string address = 3;
+  int32 port = 4;
+}
+
+message TopologyUpdateResponse {
+  bool success = 1;
+}
+
+message NodeInfo {
+  string node_id = 1;
+  string address = 2;
+  int32 port = 3;
+}
+
+message GetAllNodesRequest {}
+
+message GetAllNodesResponse {
+  repeated NodeInfo nodes = 1;
+}
+
 // Service for streaming crash records
 service CrashReplicator {
   // Client-side streaming RPC
@@ -137,5 +200,7 @@ service CrashReplicator {
 
   rpc PropagateResourceScore(ResourceScoreRequest) returns (ResourceScoreResponse);
 
-  rpc UpdateNodeStatus(NodeStatusUpdate) returns (Ack);
+  // New methods for network resilience
+  rpc UpdateTopology(TopologyUpdateRequest) returns (TopologyUpdateResponse);
+  rpc GetAllNodes(GetAllNodesRequest) returns (GetAllNodesResponse);
 }

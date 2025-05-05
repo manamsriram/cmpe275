@@ -717,7 +717,15 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
     def SendCrashes(self, request_iterator, context):
         # capture incoming metadata for this RPC
         meta = dict(context.invocation_metadata())
-        count = 0
+        is_repop = meta.get("repopulate") == "1"
+        processed = 0
+
+        # Parse headers for follower‐side routing
+        if not self.is_leader:
+            vector_clock = int(meta.get("vector_clock", "0"))
+            node_set = meta.get("node_set", "")
+            paths_meta = meta.get("paths") or ""
+            pos_meta = int(meta.get("pos", "1"))
 
         for record in request_iterator:
             count += 1
@@ -809,32 +817,35 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
                 # if final hop, store locally
                 if pos == len(pth) - 1:
                     self._store(raw)
-                    # print(f"[{self.node_id}] Stored {rid} for target {tid}")
-                    continue
-                # forward to next hop
-                next_hop = pth[pos + 1]
-                stub = self.stubs.get(next_hop)
-                if not stub:
-                    continue
-                # prepare metadata for next
-                meta_out = [("paths", json.dumps(paths)), ("pos", str(pos + 1))]
+                    self.local_records[rid] = record
+                    print(
+                        f"[{self.node_id}] stored/updated row {rid}, vc={incoming_vc}"
+                    )
 
-                def one():
-                    yield record
+                else:
+                    # Forward onward
+                    next_hop = pth[pos + 1]
+                    stub = self.stubs.get(next_hop)
+                    if not stub:
+                        continue
+                    meta_out = [
+                        ("paths", paths_meta),
+                        ("pos", str(pos + 1)),
+                        ("vector_clock", str(vector_clock)),
+                        ("node_set", node_set),
+                        ("repopulate", "1"),
+                    ]
 
-                try:
-                    ack = stub.SendCrashes(one(), metadata=meta_out)
-                    if ack.success:
-                        # print(
-                        #     f"[{self.node_id}] Forwarded {rid} to {next_hop} (target {tid}) - ACK received: {ack.message}"
-                        # )
-                        pass
-                    else:
-                        print(
-                            f"[{self.node_id}] Forward to {next_hop} reported failure: {ack.message}"
-                        )
-                except Exception as e:
-                    print(f"[{self.node_id}] Error forwarding to {next_hop}: {e}")
+                    def one():
+                        yield record
+                    try:
+                        ack = stub.SendCrashes(one(), metadata=meta_out)
+                        if not ack.success:
+                            print(
+                                f"[{self.node_id}] fwd to {next_hop} failed: {ack.message}"
+                            )
+                    except Exception as e:
+                        print(f"[{self.node_id}] Error forwarding to {next_hop}: {e}")
 
         return crash_pb2.Ack(success=True, message=f"Processed {count} records")
 
@@ -850,6 +861,563 @@ class CrashReplicatorServicer(crash_pb2_grpc.CrashReplicatorServicer):
             
             return crash_pb2.HeartbeatAckResponse(received=True)
 
+    def QueryRow(self, request, context):
+        rid = request.row_id
+        meta = dict(context.invocation_metadata())
+        path_json = meta.get("query_path")
+
+        # 1) Routed hop-by-hop
+        if path_json is not None:
+            path = json.loads(path_json)
+            pos = int(meta.get("query_pos", "0"))
+            if rid in self.local_records:
+                return crash_pb2.QueryResponse(record=self.local_records[rid])
+            if pos < len(path) - 1:
+                return self.stubs[path[pos + 1]].QueryRow(
+                    request,
+                    metadata=[("query_path", path_json), ("query_pos", str(pos + 1))],
+                )
+            context.set_code(grpc.StatusCode.NOT_FOUND)
+            return crash_pb2.QueryResponse()
+
+        # 2) Non-leader forwards to leader
+        if not self.is_leader:
+            if not self.leader_id:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                return crash_pb2.QueryResponse()
+            leader = next(n for n in self.nodes if n["id"] == self.leader_id)
+            stub = crash_pb2_grpc.CrashReplicatorStub(
+                grpc.insecure_channel(f"{leader['address']}:{leader['port']}")
+            )
+            return stub.QueryRow(request)
+
+        # 3) Leader entrypoint: gather successes
+        successes = []
+        if rid in self.local_records:
+            successes.append((self.node_id, self.local_records[rid]))
+
+        for node in self.nodes:
+            nid = node["id"]
+            if nid == self.node_id:
+                continue
+            path = find_path(self.adj, self.node_id, nid)
+            if not path or len(path) < 2:
+                continue
+            try:
+                resp = self.stubs[path[1]].QueryRow(
+                    request,
+                    metadata=[("query_path", json.dumps(path)), ("query_pos", "1")],
+                )
+                successes.append((nid, resp.record))
+            except grpc.RpcError:
+                continue
+
+        RF = 2  # Replication factor
+
+        # 4) If no successes, return NOT_FOUND
+        if not successes:
+            context.set_code(grpc.StatusCode.NOT_FOUND)
+            context.set_details(f"row_id {rid} not found on any node")
+            return crash_pb2.QueryResponse()
+            
+        # 5) Repair if fewer than RF successes
+        if len(successes) < RF:
+            print(f"[{self.node_id}] Detected under-replicated row {rid}. Found {len(successes)} replicas, expected {RF}")
+            best_node, best_rec = successes[0]
+            
+            # Get the intended replica set
+            orig = self.node_sets.get(rid, set())
+            if not orig:
+                # If we don't have a record of where this should be, create a new assignment
+                orig = set(node["id"] for node in random.sample(self.nodes, RF))
+                self.node_sets[rid] = orig
+                
+            # Identify which nodes have the data and which are missing it
+            got_ids = {nid for nid, _ in successes}
+            missing = orig - got_ids
+            
+            # Check if leader itself is missing the data
+            if self.node_id in missing:
+                print(f"[{self.node_id}] Leader is missing row {rid}, storing locally first")
+                raw = best_rec.SerializeToString()
+                self._store(raw)
+                self.local_records[rid] = best_rec
+                missing.remove(self.node_id)
+                got_ids.add(self.node_id)
+            
+            # Now replicate to other missing nodes
+            for missing_node in missing:
+                try:
+                    self._replicate_to(missing_node, best_rec)
+                    got_ids.add(missing_node)
+                except Exception as e:
+                    # Handle failure and try alternative node
+                    print(f"[{self.node_id}] Failed to update primary replica {best_node}: {e}")
+        # 6) Pick freshest and return
+        best_node, best_rec = successes[0]
+        return crash_pb2.QueryResponse(record=best_rec)
+
+
+    # helper to replicate a single record to node `nid`
+    def _replicate_to(self, nid, record):
+        """
+        Sends a one-off SendCrashes with the given record to node `nid`.
+        Raises on RPC error.
+        """
+        # build a trivial path [leader -> nid]
+        path = find_path(self.adj, self.node_id, nid)
+        if not path or len(path) < 2:
+            raise RuntimeError(f"No route to {nid}")
+        stub = self.stubs[path[1]]
+        meta = [
+            ("paths", json.dumps({nid: path})),
+            ("pos", "0"),
+            ("repopulate", "1"),
+        ]
+
+        def one():
+            yield record
+
+        ack = stub.SendCrashes(one(), metadata=meta)
+        if not ack.success:
+            raise RuntimeError(f"replication to {nid} failed: {ack.message}")
+        else:
+            print(f"[{self.node_id}] Replication to {nid} succeeded: {ack.message}")
+
+    # Private function meant to handle when a node leaves or comes back
+    def update_topology(self, new_node=None, removed_node=None):
+        """
+        Update the network topology when a node joins or leaves.
+        Clears path cache and triggers a new leader election if needed.
+        """
+        if new_node:
+            # Add the new node to our list if not already present
+            if new_node["id"] not in [n["id"] for n in self.nodes]:
+                self.nodes.append(new_node)
+                print(f"[{self.node_id}] Added new node {new_node['id']} to topology")
+
+            # Update adjacency list if this node is a peer
+            if new_node["id"] in self.adj.get(self.node_id, []):
+                # Create stub for the new peer
+                self._just_recovered = True
+                addr = f"{new_node['address']}:{new_node['port']}"
+                channel = grpc.insecure_channel(addr)
+                self.stubs[new_node["id"]] = crash_pb2_grpc.CrashReplicatorStub(channel)
+                print(
+                    f"[{self.node_id}] Created connection to new peer {new_node['id']}"
+                )
+
+            # leader should push all missing data to the rejoined node
+            if self.is_leader:
+                print(f"[{self.node_id}] Leader recovering data for {new_node['id']}")
+                self.handle_node_rejoin(new_node["id"])
+
+        if removed_node:
+            # Remove the node from our list
+            self.nodes = [n for n in self.nodes if n["id"] != removed_node]
+
+            # Update adjacency list
+            if removed_node in self.adj.get(self.node_id, []):
+                self.adj[self.node_id].remove(removed_node)
+                # Close connection if it exists
+                if removed_node in self.stubs:
+                    del self.stubs[removed_node]
+                    print(f"[{self.node_id}] Removed connection to peer {removed_node}")
+
+        # Clear path cache since topology changed
+        self.path_cache = {}
+
+        # If the leader was removed, trigger a new election
+        if removed_node and removed_node == self.leader_id:
+            print(f"[{self.node_id}] Leader {removed_node} is down, starting election")
+            self.leader_id = None
+            self.start_election()
+
+        # If we're the leader, recalculate paths
+        if self.is_leader:
+            print(f"[{self.node_id}] Topology changed, recalculating paths as leader")
+            # Clear cached targets to force recalculation
+            if hasattr(self, "cached_targets"):
+                del self.cached_targets
+
+    def handle_node_rejoin(self, recovered_id):
+        if not self.is_leader:
+            return
+
+        # Collect all (rid, record) pairs we need to push
+        to_push = []
+
+        for rid, nodeset in list(self.node_sets.items()):
+            if recovered_id not in nodeset:
+                continue
+
+            # And only if we are currently under-replicated or the recovered node is missing
+            # (we assume node_sets wasn't updated when it went down)
+            # if recovered_id == self.node_id, local_records might be empty
+            needs_repop = recovered_id != self.node_id or rid not in self.local_records
+            if not needs_repop:
+                continue
+
+            # fetch from any other live replica
+            source = next((n for n in nodeset if n != recovered_id), None)
+            if source is None:
+                # no-one else has it
+                continue
+            try:
+                rec = (
+                    self.stubs[source]
+                    .QueryRow(crash_pb2.QueryRequest(row_id=rid))
+                    .record
+                )
+            except grpc.RpcError:
+                continue
+
+            to_push.append((rid, rec))
+
+        if not to_push:
+            print(f"[{self.node_id}] Nothing to re-send to {recovered_id}")
+            return
+
+        if recovered_id == self.node_id:
+            for rid, rec in to_push:
+                raw = rec.SerializeToString()
+                self._store(raw)
+                self.local_records[rid] = rec
+            print(f"[{self.node_id}] Restored {len(to_push)} rows into local store")
+        else:
+            # Stream them to the recovered follower
+            stub = self.stubs.get(recovered_id)
+            if stub is None:
+                print(f"[{self.node_id}] No stub for {recovered_id}, cannot re-send")
+                return
+
+            def stream():
+                for _, rec in to_push:
+                    yield rec
+
+            try:
+                ack = stub.SendCrashes(stream())
+                if ack.success:
+                    print(
+                        f"[{self.node_id}] Re-sent {len(to_push)} rows → {recovered_id}"
+                    )
+                else:
+                    print(
+                        f"[{self.node_id}] Repopulation to {recovered_id} failed: {ack.message}"
+                    )
+            except Exception as e:
+                print(f"[{self.node_id}] Error streaming to {recovered_id}: {e}")
+
+    def detect_and_repair_network_partition(self):
+        """
+        Detect if the network is partitioned and attempt to repair it
+        by establishing new connections between disconnected segments.
+        """
+        print(f"[{self.node_id}] Checking for network partitions...")
+
+        # Build a graph of reachable nodes
+        reachable = set([self.node_id])
+        queue = [self.node_id]
+
+        while queue:
+            current = queue.pop(0)
+            for nbr_id in self.adj.get(current, []):
+                if nbr_id in reachable:
+                    continue
+
+                # Check if we can reach this neighbor
+                can_reach = False
+                if current == self.node_id:
+                    try:
+                        self.stubs[nbr_id].GetLeader(
+                            crash_pb2.LeaderRequest(), timeout=1
+                        )
+                        can_reach = True
+                    except:
+                        pass
+                else:
+                    # Assume nodes in our reachable set can reach their neighbors
+                    can_reach = True
+
+                if can_reach:
+                    reachable.add(nbr_id)
+                    queue.append(nbr_id)
+
+        # If we can't reach all nodes, we have a partition
+        if len(reachable) < len(self.nodes):
+            print(
+                f"[{self.node_id}] Network partition detected! Reachable: {reachable}"
+            )
+
+            # Find unreachable nodes
+            unreachable = set(n["id"] for n in self.nodes) - reachable
+
+            # Try to establish new connections to bridge the partition
+            for r_id in reachable:
+                for u_id in unreachable:
+                    # Skip if already connected
+                    if u_id in self.adj.get(r_id, []):
+                        continue
+
+                    # Try to create a new connection
+                    r_node = next((n for n in self.nodes if n["id"] == r_id), None)
+                    u_node = next((n for n in self.nodes if n["id"] == u_id), None)
+
+                    if r_node and u_node:
+                        print(
+                            f"[{self.node_id}] Attempting to bridge partition by connecting {r_id} to {u_id}"
+                        )
+
+                        # Update adjacency lists
+                        self.adj.setdefault(r_id, []).append(u_id)
+                        self.adj.setdefault(u_id, []).append(r_id)
+
+                        # If we're creating a connection for ourselves, establish the stub
+                        if r_id == self.node_id:
+                            # Create our stub to the unreachable node
+                            addr = f"{u_node['address']}:{u_node['port']}"
+                            channel = grpc.insecure_channel(addr)
+                            self.stubs[u_id] = crash_pb2_grpc.CrashReplicatorStub(
+                                channel
+                            )
+
+                            # Now tell the unreachable node to create a stub back to us
+                            try:
+                                # Create a topology update request
+                                request = crash_pb2.TopologyUpdateRequest(
+                                    update_type="add",
+                                    node_id=self.node_id,
+                                    address=next(
+                                        (
+                                            n["address"]
+                                            for n in self.nodes
+                                            if n["id"] == self.node_id
+                                        ),
+                                        "",
+                                    ),
+                                    port=next(
+                                        (
+                                            n["port"]
+                                            for n in self.nodes
+                                            if n["id"] == self.node_id
+                                        ),
+                                        0,
+                                    ),
+                                )
+
+                                # Send the request to create a connection back to us
+                                self.stubs[u_id].UpdateTopology(request)
+                                print(
+                                    f"[{self.node_id}] Notified {u_id} to create connection back to us"
+                                )
+                            except Exception as e:
+                                print(
+                                    f"[{self.node_id}] Failed to notify {u_id} to create connection: {e}"
+                                )
+                                continue
+                        # Clear path cache to force recalculation of routes
+                        self.path_cache = {}
+                        return True
+
+            return False
+        return True
+
+    def monitor_node_health(self):
+        """
+        Periodically ping every node in self.nodes (except ourselves),
+        track which ones we think are offline, and fire
+        handle_node_rejoin/recovery when they come back.
+        """
+        while True:
+            time.sleep(5)
+            # print(self.node_sets)
+            for node in list(self.nodes):
+                nid = node["id"]
+                if nid == self.node_id:
+                    continue
+
+                try:
+                    stub = self.stubs.get(nid)
+                    # print(f"Checking if stub exists for {nid}. {stub}")
+                    if stub is None:
+                        addr = f"{node['address']}:{node['port']}"
+                        stub = crash_pb2_grpc.CrashReplicatorStub(
+                            grpc.insecure_channel(addr)
+                        )
+                        self.stubs[nid] = stub
+
+                    # --- ping it ---
+                    alive = True
+                    try:
+                        # print("Attempting to get stub for node")
+                        stub.GetLeader(crash_pb2.LeaderRequest(), timeout=2)
+                        # print("Got stub for node")
+                    except grpc.RpcError:
+                        alive = False
+
+                    # print(f"Checking {nid} for liveness. Alive = {alive}. In offline = {nid in self.offline}")
+
+                    # --- recovery: it was offline, now it's alive ---
+                    if alive and nid in self.offline:
+                        print(f"[{self.node_id}] RECOVERY detected for {nid}")
+                        # re-add to adjacency so heartbeats resume
+                        if nid not in self.adj.get(self.node_id, []):
+                            self.adj.setdefault(self.node_id, []).append(nid)
+                        # only the leader pumps the missing data
+                        if self.is_leader:
+                            self.handle_node_rejoin(nid)
+                        self.offline.remove(nid)
+                        continue
+
+                    # --- failure: it was online, now it's dead ---
+                    if not alive and nid not in self.offline:
+                        print(f"[{self.node_id}] FAILURE detected for {nid}")
+                        # prune it out of our adjacency
+                        if nid in self.adj.get(self.node_id, []):
+                            self.adj[self.node_id].remove(nid)
+                        self.offline.add(nid)
+                        continue
+
+                    # --- otherwise, nothing to do for this node ---
+                except Exception as e:
+                    # catch *any* bug in our health code so the thread never dies
+                    print(f"[{self.node_id}] monitor_node_health error for {nid}: {e}")
+                    continue
+
+                # Only maintain heartbeats to direct peers
+                if nid not in self.adj.get(self.node_id, []):
+                    continue
+
+                # Fire a heartbeat just to keep the channel warm
+                try:
+                    stub.GetLeader(crash_pb2.LeaderRequest(), timeout=2)
+                except grpc.RpcError:
+                    pass
+
+            # Try to stitch up any network partitions
+            self.detect_and_repair_network_partition()
+
+    def RegisterNode(self, request, context):
+        """
+        Allow new nodes to register with the network.
+        """
+        new_node = {
+            "id": request.node_id,
+            "address": request.address,
+            "port": request.port,
+        }
+
+        # Update our topology with the new node
+        self.update_topology(new_node=new_node)
+
+        # If we're the leader, broadcast the updated topology
+        if self.is_leader:
+            self.broadcast_topology_update(new_node=new_node)
+
+        return crash_pb2.RegisterNodeResponse(
+            success=True,
+            current_leader=self.leader_id or "",
+            nodes=[n["id"] for n in self.nodes],
+        )
+
+    def GetAllNodes(self, request, context):
+        """
+        Return information about all nodes in the network.
+        Used by clients when leader changes.
+        """
+        node_infos = []
+        for node in self.nodes:
+            node_infos.append(
+                crash_pb2.NodeInfo(
+                    node_id=node["id"], address=node["address"], port=node["port"]
+                )
+            )
+
+        return crash_pb2.GetAllNodesResponse(nodes=node_infos)
+
+    def UpdateTopology(self, request, context):
+        if request.update_type == "add":
+            # Create a stub to the node that sent the request
+            addr = f"{request.address}:{request.port}"
+            channel = grpc.insecure_channel(addr)
+            self.stubs[request.node_id] = crash_pb2_grpc.CrashReplicatorStub(channel)
+
+            # Update adjacency list
+            if request.node_id not in self.adj.get(self.node_id, []):
+                self.adj.setdefault(self.node_id, []).append(request.node_id)
+
+            print(f"[{self.node_id}] Created connection to {request.node_id}")
+
+            # Clear path cache
+            self.path_cache = {}
+
+            # If we're the leader, recalculate paths
+            if self.is_leader:
+                print(
+                    f"[{self.node_id}] Leader recalculating paths after topology change"
+                )
+                if hasattr(self, "cached_targets"):
+                    del self.cached_targets
+            # If we're not the leader, forward the request to the leader
+            elif self.leader_id and self.leader_id != self.node_id:
+                try:
+                    # Get leader stub if needed
+                    if self.leader_id not in self.stubs:
+                        leader_node = next(
+                            (n for n in self.nodes if n["id"] == self.leader_id), None
+                        )
+                        if leader_node:
+                            leader_addr = (
+                                f"{leader_node['address']}:{leader_node['port']}"
+                            )
+                            leader_channel = grpc.insecure_channel(leader_addr)
+                            self.stubs[self.leader_id] = (
+                                crash_pb2_grpc.CrashReplicatorStub(leader_channel)
+                            )
+
+                    # Forward the same request to the leader
+                    print(
+                        f"[{self.node_id}] Forwarding topology update to leader {self.leader_id}"
+                    )
+                    self.stubs[self.leader_id].UpdateTopology(request)
+                except Exception as e:
+                    print(
+                        f"[{self.node_id}] Failed to forward topology update to leader: {e}"
+                    )
+        return crash_pb2.TopologyUpdateResponse(success=True)
+
+    def broadcast_topology_update(self, new_node=None, removed_node=None):
+        """
+        Broadcast topology changes to all nodes.
+        """
+        for node in self.nodes:
+            nid = node["id"]
+            if nid == self.node_id:
+                continue
+
+            try:
+                # Create stub if needed
+                if nid not in self.stubs:
+                    addr = f"{node['address']}:{node['port']}"
+                    channel = grpc.insecure_channel(addr)
+                    self.stubs[nid] = crash_pb2_grpc.CrashReplicatorStub(channel)
+
+                # Send topology update
+                if new_node:
+                    request = crash_pb2.TopologyUpdateRequest(
+                        update_type="add",
+                        node_id=new_node["id"],
+                        address=new_node["address"],
+                        port=new_node["port"],
+                    )
+                else:
+                    request = crash_pb2.TopologyUpdateRequest(
+                        update_type="remove", node_id=removed_node
+                    )
+
+                self.stubs[nid].UpdateTopology(request)
+            except Exception as e:
+                print(f"[{self.node_id}] Error sending topology update to {nid}: {e}")
 
 def serve(config_path):
     # load all configs and adjacency
